@@ -1,0 +1,9 @@
+{
+  "name": "kh-recoded-recomp",
+  "version": "1.0.0",
+  "dependencies": [
+    "qtbase",
+    "capstone",
+    "gtest"
+  ]
+}
