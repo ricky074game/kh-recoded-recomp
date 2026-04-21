@@ -6,6 +6,8 @@
 #include <iostream>
 #include <algorithm>
 #include <cctype>
+#include <QKeyEvent>
+#include <QMouseEvent>
 
 namespace {
 uint16_t ClampTouchCoordinate(int value, int max_value) {
@@ -13,22 +15,41 @@ uint16_t ClampTouchCoordinate(int value, int max_value) {
     if (value > max_value) return static_cast<uint16_t>(max_value);
     return static_cast<uint16_t>(value);
 }
+
+Qt::Key StringToQtKey(const std::string& val) {
+    std::string upper = val;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    if (upper == "SPACE") return Qt::Key_Space;
+    if (upper == "Z") return Qt::Key_Z;
+    if (upper == "X") return Qt::Key_X;
+    if (upper == "C") return Qt::Key_C;
+    if (upper == "A") return Qt::Key_A;
+    if (upper == "S") return Qt::Key_S;
+    if (upper == "RETURN") return Qt::Key_Return;
+    if (upper == "ENTER") return Qt::Key_Return;
+    if (upper == "RIGHT") return Qt::Key_Right;
+    if (upper == "LEFT") return Qt::Key_Left;
+    if (upper == "UP") return Qt::Key_Up;
+    if (upper == "DOWN") return Qt::Key_Down;
+    if (upper == "RSHIFT") return Qt::Key_Shift;
+    return Qt::Key_unknown;
+}
 }
 
 InputManager::InputManager() {
-    // Default bindings
-    bindings["A"] = SDL_SCANCODE_SPACE;
-    bindings["B"] = SDL_SCANCODE_Z;
-    bindings["Select"] = SDL_SCANCODE_RSHIFT;
-    bindings["Start"] = SDL_SCANCODE_RETURN;
-    bindings["Right"] = SDL_SCANCODE_RIGHT;
-    bindings["Left"] = SDL_SCANCODE_LEFT;
-    bindings["Up"] = SDL_SCANCODE_UP;
-    bindings["Down"] = SDL_SCANCODE_DOWN;
-    bindings["R"] = SDL_SCANCODE_S;
-    bindings["L"] = SDL_SCANCODE_A;
-    bindings["X"] = SDL_SCANCODE_X;
-    bindings["Y"] = SDL_SCANCODE_C;
+    // Default Qt bindings
+    bindings["A"] = Qt::Key_Space;
+    bindings["B"] = Qt::Key_Z;
+    bindings["Select"] = Qt::Key_Shift;
+    bindings["Start"] = Qt::Key_Return;
+    bindings["Right"] = Qt::Key_Right;
+    bindings["Left"] = Qt::Key_Left;
+    bindings["Up"] = Qt::Key_Up;
+    bindings["Down"] = Qt::Key_Down;
+    bindings["R"] = Qt::Key_S;
+    bindings["L"] = Qt::Key_A;
+    bindings["X"] = Qt::Key_X;
+    bindings["Y"] = Qt::Key_C;
 }
 
 void InputManager::LoadConfig(const std::string& path) {
@@ -46,9 +67,9 @@ void InputManager::LoadConfig(const std::string& path) {
             key.erase(std::remove_if(key.begin(), key.end(), ::isspace), key.end());
             val.erase(std::remove_if(val.begin(), val.end(), ::isspace), val.end());
             
-            SDL_Scancode scancode = SDL_GetScancodeFromName(val.c_str());
-            if (scancode != SDL_SCANCODE_UNKNOWN) {
-                bindings[key] = scancode;
+            Qt::Key key_code = StringToQtKey(val);
+            if (key_code != Qt::Key_unknown) {
+                bindings[key] = key_code;
             }
         }
     }
@@ -83,26 +104,24 @@ void InputManager::UpdateVirtualButton(const std::string& button, bool pressed) 
     else if (button == "Y") SetBit(extkeyin, 1, pressed);
 }
 
-void InputManager::HandleKeyEvent(const SDL_KeyboardEvent& key) {
-    bool pressed = (key.state == SDL_PRESSED);
-    SDL_Scancode code = key.keysym.scancode;
+void InputManager::HandleKeyEvent(QKeyEvent* event, bool pressed) {
+    int code = event->key();
     
-    for (const auto& [btn, scancode] : bindings) {
-        if (code == scancode) {
+    for (const auto& [btn, key_code] : bindings) {
+        if (code == static_cast<int>(key_code)) {
             UpdateVirtualButton(btn, pressed);
         }
     }
 }
 
-void InputManager::HandleMouseEvent(const SDL_MouseButtonEvent& mouse) {
-    if (mouse.button == SDL_BUTTON_LEFT) {
-        bool pressed = (mouse.state == SDL_PRESSED);
+void InputManager::HandleMouseEvent(QMouseEvent* event, bool pressed) {
+    if (event->button() == Qt::LeftButton) {
         SetBit(extkeyin, 6, pressed); // Pen bit
         
         if (pressed) {
             // Update touch X/Y
-            int raw_x = mouse.x - display_offset_x;
-            int raw_y = mouse.y - display_offset_y;
+            int raw_x = event->position().x() - display_offset_x;
+            int raw_y = event->position().y() - display_offset_y;
             
             float unscaled_x = raw_x / scale_factor;
             float unscaled_y = raw_y / scale_factor;
@@ -115,10 +134,10 @@ void InputManager::HandleMouseEvent(const SDL_MouseButtonEvent& mouse) {
     }
 }
 
-void InputManager::HandleMouseMotion(const SDL_MouseMotionEvent& motion) {
-    if (motion.state & SDL_BUTTON_LMASK) {
-        int raw_x = motion.x - display_offset_x;
-        int raw_y = motion.y - display_offset_y;
+void InputManager::HandleMouseMotion(QMouseEvent* event) {
+    if (event->buttons() & Qt::LeftButton) {
+        int raw_x = event->position().x() - display_offset_x;
+        int raw_y = event->position().y() - display_offset_y;
         
         float unscaled_x = raw_x / scale_factor;
         float unscaled_y = raw_y / scale_factor;
