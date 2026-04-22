@@ -94,7 +94,11 @@ private:
     }
 
     uint32_t HandleHardwareRead(uint32_t address);
-    void     HandleHardwareWrite(uint32_t address, uint32_t value);
+    void     HandleHardwareWrite(uint32_t address, uint32_t value, uint8_t write_size);
+
+    uint32_t dma_arm9_src_raw[4] = {};
+    uint32_t dma_arm9_dst_raw[4] = {};
+    uint32_t dma_arm9_ctrl_raw[4] = {};
 
     uint8_t* ResolveAddress(uint32_t address, uint32_t& offset, uint32_t& max_size);
     const uint8_t* ResolveAddressConst(uint32_t address, uint32_t& offset, uint32_t& max_size) const;

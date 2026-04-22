@@ -349,16 +349,50 @@ static void RunTimingThread() {
     Log(LogLevel::Info, "Timing thread started (59.83Hz VBlank).");
 
     auto next_vblank = std::chrono::high_resolution_clock::now();
+    auto next_hblank = next_vblank;
     const auto vblank_interval = std::chrono::nanoseconds(16715000);
+    const auto hblank_interval = std::chrono::nanoseconds(63600);
     const bool force_dispcnt = ReadEnvBool("KH_DEBUG_FORCE_DISPCNT", false);
     const uint32_t force_dispcnt_value =
         static_cast<uint32_t>(ReadEnvInt("KH_DEBUG_FORCE_DISPCNT_VALUE", 0x1F00, 0, 0xFFFFFFFF));
 
+    auto trigger_arm9_dma = [](DMAStartTiming timing_mode) {
+        for (int channel = 0; channel < 4; ++channel) {
+            DMAChannel& dma = g_memory.dma_arm9[channel];
+            if (!dma.enabled || dma.timing != timing_mode) continue;
+
+            dma.Execute(&g_memory);
+            if (dma.irq_on_end) {
+                g_memory.irq_arm9.RaiseIRQ(IRQBits::DMA0 << channel);
+            }
+        }
+    };
+
+    auto trigger_arm7_dma = [](DMAStartTiming timing_mode) {
+        for (int channel = 0; channel < 4; ++channel) {
+            DMAChannel& dma = g_memory.dma_arm7[channel];
+            if (!dma.enabled || dma.timing != timing_mode) continue;
+            dma.Execute(&g_memory);
+        }
+    };
+
     while (g_running) {
         auto now = std::chrono::high_resolution_clock::now();
+        while (now >= next_hblank) {
+            g_memory.irq_arm9.RaiseIRQ(IRQBits::HBlank);
+            g_memory.irq_arm7.RaiseIRQ(IRQBits::HBlank);
+            trigger_arm9_dma(DMAStartTiming::HBlank);
+            trigger_arm7_dma(DMAStartTiming::HBlank);
+            next_hblank += hblank_interval;
+        }
+
         if (now >= next_vblank) {
             g_memory.irq_arm9.RaiseIRQ(IRQBits::VBlank);
             g_memory.irq_arm7.RaiseIRQ(IRQBits::VBlank);
+            trigger_arm9_dma(DMAStartTiming::VBlank);
+            trigger_arm7_dma(DMAStartTiming::VBlank);
+            trigger_arm9_dma(DMAStartTiming::Special);
+            trigger_arm7_dma(DMAStartTiming::Special);
             g_vblank_count.fetch_add(1, std::memory_order_relaxed);
 
             if (force_dispcnt) {
