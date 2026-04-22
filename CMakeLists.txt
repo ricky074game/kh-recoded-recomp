@@ -1,9 +1,4 @@
 cmake_minimum_required(VERSION 3.20)
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake")
-    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
-endif()
-
 project(KHRecodedRecomp LANGUAGES CXX C)
 
 # ============================================================================
