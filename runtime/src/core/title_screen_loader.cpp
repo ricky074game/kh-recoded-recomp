@@ -316,13 +316,22 @@ bool TitleScreenLoader::Load(const std::string& dataDir) {
     const fs::path ttl_dir = fs::path(dataDir) / "ttl";
     const fs::path ttl_p2_path = ttl_dir / "ttl.p2";
     const fs::path ttl_en_p2_path = ttl_dir / "ttl_en.p2";
+    const fs::path ttl_dir_abs = fs::absolute(ttl_dir);
+    const fs::path ttl_p2_abs = fs::absolute(ttl_p2_path);
+    const fs::path ttl_en_p2_abs = fs::absolute(ttl_en_p2_path);
 
     if (!fs::exists(ttl_p2_path)) {
-        std::fprintf(stderr, "TitleScreen: ttl.p2 not found at %s\n", ttl_p2_path.c_str());
+        std::fprintf(stderr, "TitleScreen: ttl.p2 not found at %s\n", ttl_p2_abs.string().c_str());
         return false;
     }
 
-    std::fprintf(stderr, "TitleScreen: Loading from %s\n", ttl_dir.c_str());
+    if (!fs::exists(ttl_en_p2_path)) {
+        std::fprintf(stderr,
+                     "TitleScreen: ttl_en.p2 not found at %s (continuing without localized title text)\n",
+                     ttl_en_p2_abs.string().c_str());
+    }
+
+    std::fprintf(stderr, "TitleScreen: Loading from %s\n", ttl_dir_abs.string().c_str());
 
     // Parse the main title P2 pack
     auto ttl_files = ParseP2(ttl_p2_path.string());
