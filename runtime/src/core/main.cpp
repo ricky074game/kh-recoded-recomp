@@ -7,6 +7,7 @@
 #include <cctype>
 #include <fstream>
 #include <iomanip>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -261,7 +262,7 @@ static void CrashHandler(int signum) {
     std::exit(signum);
 }
 
-static void RunARM9() {
+static void RunARM9(const std::filesystem::path& data_root) {
     Log(LogLevel::Info, "ARM9 thread started.");
 
     g_debug_arm9_dispatch_count.store(0, std::memory_order_relaxed);
@@ -279,16 +280,25 @@ static void RunARM9() {
     ctx.running_flag = &g_running;
     g_arm9_ctx.store(&ctx, std::memory_order_release);
 
-    std::ifstream arm9_file("recoded/arm9.bin", std::ios::binary);
+    const std::filesystem::path arm9_path = (data_root / "arm9.bin").lexically_normal();
+    const std::filesystem::path y9_path = (data_root / "y9.bin").lexically_normal();
+
+    std::ifstream arm9_file(arm9_path, std::ios::binary);
     if (arm9_file.is_open()) {
         arm9_file.read(reinterpret_cast<char*>(g_memory.GetMainRAM()), g_memory.GetMainRAMSize());
-        Log(LogLevel::Info, "ARM9 binary loaded into Main RAM.");
+        Log(LogLevel::Info, "ARM9 binary loaded into Main RAM from: " +
+                                 std::filesystem::absolute(arm9_path).string());
     } else {
-        Log(LogLevel::Error, "Failed to load recoded/arm9.bin!");
+        Log(LogLevel::Error, "Failed to load ARM9 binary at: " +
+                                 std::filesystem::absolute(arm9_path).string());
     }
 
-    if (g_memory.GetOverlayManager().LoadY9("recoded/y9.bin")) {
-        Log(LogLevel::Info, "Overlay table (y9.bin) loaded.");
+    if (g_memory.GetOverlayManager().LoadY9(y9_path.string())) {
+        Log(LogLevel::Info, "Overlay table (y9.bin) loaded from: " +
+                                 std::filesystem::absolute(y9_path).string());
+    } else {
+        Log(LogLevel::Error, "Failed to load overlay table (y9.bin) at: " +
+                                 std::filesystem::absolute(y9_path).string());
     }
 
     {
@@ -437,8 +447,15 @@ int main(int argc, char* argv[]) {
         Log(LogLevel::Warning, "SUPERDEBUG enabled: verbose instruction trace spam is active.");
     }
 
-    Log(LogLevel::Info, "Data directory: " + data_dir);
-    VFS vfs(data_dir);
+    const std::filesystem::path data_dir_path = std::filesystem::path(data_dir).lexically_normal();
+    std::filesystem::path data_root = data_dir_path;
+    if (data_dir_path.filename() == "data") {
+        data_root = data_dir_path.parent_path();
+    }
+
+    Log(LogLevel::Info, "Data directory: " + std::filesystem::absolute(data_dir_path).string());
+    Log(LogLevel::Info, "Data root: " + std::filesystem::absolute(data_root).string());
+    VFS vfs(data_dir_path.string());
 
     Log(LogLevel::Info, "Initializing Virtual DS Motherboard...");
     Log(LogLevel::Info, "  Main RAM:    4 MB @ 0x02000000");
@@ -468,12 +485,12 @@ int main(int argc, char* argv[]) {
     }
 
     Log(LogLevel::Info, "Spawning CPU threads...");
-    std::thread arm9_thread(RunARM9);
+    std::thread arm9_thread(RunARM9, data_root);
     std::thread arm7_thread(RunARM7);
     std::thread timing_thread(RunTimingThread);
 
     g_memory.GetAudioManager().Initialize();
-    g_memory.GetAudioManager().LoadMap("recoded/data/audio_map.txt");
+    g_memory.GetAudioManager().LoadMap((data_dir_path / "audio_map.txt").string());
     g_memory.GetInputManager().LoadConfig("bindings.ini");
 
     SoftwareRenderer ds_renderer;

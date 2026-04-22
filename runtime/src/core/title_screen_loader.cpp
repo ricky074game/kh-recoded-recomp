@@ -1,5 +1,6 @@
 #include "title_screen_loader.h"
 #include "sw_renderer.h"
+#include "lz_decompress.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -9,62 +10,11 @@
 // ── LZ11 Decompression ──────────────────────────────────────────────────────
 
 std::vector<uint8_t> TitleScreenLoader::DecompressLZ11(const uint8_t* data, size_t size) {
-    if (size < 4 || data[0] != 0x11) return {};
-
-    uint32_t header = 0;
-    std::memcpy(&header, data, 4);
-    uint32_t decomp_size = (header >> 8) & 0xFFFFFF;
-    size_t pos = 4;
-
-    if (decomp_size == 0 && size >= 8) {
-        std::memcpy(&decomp_size, data + 4, 4);
-        pos = 8;
-    }
-
     std::vector<uint8_t> out;
-    out.reserve(decomp_size);
-
-    while (out.size() < decomp_size && pos < size) {
-        uint8_t flags = data[pos++];
-        for (int bit = 0; bit < 8 && out.size() < decomp_size; ++bit) {
-            if (flags & (0x80 >> bit)) {
-                if (pos >= size) break;
-                int indicator = (data[pos] >> 4) & 0x0F;
-                int length, disp;
-                if (indicator == 0) {
-                    if (pos + 2 >= size) break;
-                    length = ((data[pos] & 0x0F) << 4) | (data[pos + 1] >> 4);
-                    length += 0x11;
-                    disp = ((data[pos + 1] & 0x0F) << 8) | data[pos + 2];
-                    disp += 1;
-                    pos += 3;
-                } else if (indicator == 1) {
-                    if (pos + 3 >= size) break;
-                    length = ((data[pos] & 0x0F) << 12) | (data[pos + 1] << 4) | (data[pos + 2] >> 4);
-                    length += 0x111;
-                    disp = ((data[pos + 2] & 0x0F) << 8) | data[pos + 3];
-                    disp += 1;
-                    pos += 4;
-                } else {
-                    if (pos + 1 >= size) break;
-                    length = indicator + 1;
-                    disp = ((data[pos] & 0x0F) << 8) | data[pos + 1];
-                    disp += 1;
-                    pos += 2;
-                }
-                for (int i = 0; i < length && out.size() < decomp_size; ++i) {
-                    if (static_cast<int>(disp) > static_cast<int>(out.size()))
-                        out.push_back(0);
-                    else
-                        out.push_back(out[out.size() - disp]);
-                }
-            } else {
-                if (pos >= size) break;
-                out.push_back(data[pos++]);
-            }
-        }
+    const LZDecompress::Result result = LZDecompress::DecompressFromBuffer(data, size, out);
+    if (!result.ok) {
+        out.clear();
     }
-    out.resize(std::min(out.size(), static_cast<size_t>(decomp_size)));
     return out;
 }
 
@@ -316,13 +266,22 @@ bool TitleScreenLoader::Load(const std::string& dataDir) {
     const fs::path ttl_dir = fs::path(dataDir) / "ttl";
     const fs::path ttl_p2_path = ttl_dir / "ttl.p2";
     const fs::path ttl_en_p2_path = ttl_dir / "ttl_en.p2";
+    const fs::path ttl_dir_abs = fs::absolute(ttl_dir);
+    const fs::path ttl_p2_abs = fs::absolute(ttl_p2_path);
+    const fs::path ttl_en_p2_abs = fs::absolute(ttl_en_p2_path);
 
     if (!fs::exists(ttl_p2_path)) {
-        std::fprintf(stderr, "TitleScreen: ttl.p2 not found at %s\n", ttl_p2_path.c_str());
+        std::fprintf(stderr, "TitleScreen: ttl.p2 not found at %s\n", ttl_p2_abs.string().c_str());
         return false;
     }
 
-    std::fprintf(stderr, "TitleScreen: Loading from %s\n", ttl_dir.c_str());
+    if (!fs::exists(ttl_en_p2_path)) {
+        std::fprintf(stderr,
+                     "TitleScreen: ttl_en.p2 not found at %s (continuing without localized title text)\n",
+                     ttl_en_p2_abs.string().c_str());
+    }
+
+    std::fprintf(stderr, "TitleScreen: Loading from %s\n", ttl_dir_abs.string().c_str());
 
     // Parse the main title P2 pack
     auto ttl_files = ParseP2(ttl_p2_path.string());

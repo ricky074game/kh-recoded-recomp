@@ -1,5 +1,6 @@
 #include "memory_map.h"
 #include <atomic>
+#include <cstdlib>
 
 extern void RegisterAllLiftedFunctions(NDSMemory* mem);
 extern void RegisterITCMHelperFunctions(NDSMemory* mem);
@@ -23,6 +24,15 @@ constexpr uint32_t kWRAMMirrorMask = 0x0003FFFF; // 256KB mirrored window
 constexpr uint32_t kVRAMMirrorStart = 0x06000000;
 constexpr uint32_t kVRAMMirrorEndExclusive = 0x07000000;
 constexpr uint32_t kTransientOpenBusStart = 0x07000800;
+
+bool IsHWProbeDebugEnabled() {
+    static const bool enabled = []() {
+        const char* env = std::getenv("KH_DEBUG_HW_PROBES");
+        if (env == nullptr) return false;
+        return std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
 }
 
 NDSMemory::NDSMemory() {
@@ -55,9 +65,6 @@ uint32_t NDSMemory::HandleHardwareRead(uint32_t address) {
     if (address >= 0x04001000 && address <= 0x0400106F) {
         return engine2d_b.ReadRegister(address - 0x04001000);
     }
-
-    if (address == 0x04000130) return keyinput;
-    if (address == 0x04000136) return extkeyin;
 
     if (address == 0x04000180) return ipc_sync_arm9.Read();
 
@@ -129,10 +136,11 @@ uint32_t NDSMemory::HandleHardwareRead(uint32_t address) {
 }
 
 void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
+    const bool debug_hw_probes = IsHWProbeDebugEnabled();
 
     static bool seen_dispcnt_a_write = false;
     static bool seen_dispcnt_b_write = false;
-    if (address == 0x04000000 && !seen_dispcnt_a_write) {
+    if (debug_hw_probes && address == 0x04000000 && !seen_dispcnt_a_write) {
         seen_dispcnt_a_write = true;
         std::fprintf(stderr,
                      "NDSMemory: first DISPCNT-A write addr=0x%08X value=0x%08X lastDispatch=0x%08X\n",
@@ -140,7 +148,7 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
                      value,
                      g_debug_arm9_last_dispatch_addr.load(std::memory_order_relaxed));
     }
-    if (address == 0x04001000 && !seen_dispcnt_b_write) {
+    if (debug_hw_probes && address == 0x04001000 && !seen_dispcnt_b_write) {
         seen_dispcnt_b_write = true;
         std::fprintf(stderr,
                      "NDSMemory: first DISPCNT-B write addr=0x%08X value=0x%08X lastDispatch=0x%08X\n",
@@ -149,7 +157,7 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
                      g_debug_arm9_last_dispatch_addr.load(std::memory_order_relaxed));
     }
 
-    if (address >= 0x04000000 && address <= 0x0400106F) {
+    if (debug_hw_probes && address >= 0x04000000 && address <= 0x0400106F) {
         static bool seen_hwio_write[0x1070] = {};
         const uint32_t idx = address - 0x04000000;
         if (idx < 0x1070 && !seen_hwio_write[idx]) {
@@ -303,6 +311,40 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
     if (address == 0x04000400) { gx_engine.WriteGXFIFO(value); return; }
     if (address >= 0x04000440 && address <= 0x040005CC) { gx_engine.WriteCommandPort(address, value); return; }
 
+}
+
+void NDSMemory::StepHardware(int arm9_cycles) {
+    if (arm9_cycles <= 0) {
+        return;
+    }
+
+    TimerCore timer_core;
+    timer_core.tmr = &timers_arm9;
+    timer_core.irq = &irq_arm9;
+    timer_core.StepTimers(arm9_cycles);
+
+    const bool vblank_pending = (irq_arm9.if_reg & IRQBits::VBlank) != 0;
+    if (!vblank_pending) {
+        arm9_vblank_dma_serviced = false;
+        return;
+    }
+
+    if (arm9_vblank_dma_serviced) {
+        return;
+    }
+
+    for (int channel = 0; channel < 4; ++channel) {
+        auto& dma = dma_arm9[channel];
+        if (!dma.enabled || dma.timing != DMAStartTiming::VBlank) {
+            continue;
+        }
+
+        dma.Execute(this);
+        if (dma.irq_on_end) {
+            irq_arm9.RaiseIRQ(IRQBits::DMA0 << channel);
+        }
+    }
+    arm9_vblank_dma_serviced = true;
 }
 
 uint8_t NDSMemory::Read8(uint32_t address) const {
