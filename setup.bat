@@ -1,252 +1,485 @@
 @echo off
-REM setup.bat - Kingdom Hearts Re:coded Static Recompilation Build Orchestrator
-REM Completely automatic: installs dependencies silently and compiles the project
-REM Usage: setup.bat [options] <path_to_nds_rom>
+setlocal EnableExtensions EnableDelayedExpansion
+goto :main
 
-setlocal enabledelayedexpansion
-
-if "%~1"=="" (
-    echo Usage: setup.bat [options] ^<path_to_nds_rom^>
-    echo.
-    echo Options:
-    echo   -d, --debug           Build runtime in Debug mode
-    echo   -j, --jobs N          Max parallel compile jobs
-    echo   --skip-deps           Skip automatic dependency installation
-    exit /b 1
-)
-
-set "ROM_PATH=%~1"
-set "DEBUG_MODE=0"
-set "SKIP_DEPS=0"
-set "BUILD_JOBS="
-
-:parse_args
-if "%~1"=="" goto args_done
-if "%~1"=="-d" goto debug_mode
-if "%~1"=="--debug" goto debug_mode
-if "%~1"=="-j" goto jobs_mode
-if "%~1"=="--jobs" goto jobs_mode
-if "%~1"=="--skip-deps" (
-    set "SKIP_DEPS=1"
-    shift
-    goto parse_args
-) else if "%~1"=="-h" goto show_help
-else if "%~1"=="--help" goto show_help
-else (
-    shift
-    goto parse_args
-)
-
-:debug_mode
-set "DEBUG_MODE=1"
-shift
-goto parse_args
-
-:jobs_mode
-set "BUILD_JOBS=%~2"
-shift
-shift
-goto parse_args
-
-:show_help
+:usage
 echo Usage: setup.bat [options] ^<path_to_nds_rom^>
 echo.
 echo Options:
-echo   -d, --debug           Build runtime in Debug mode
-echo   -j, --jobs N          Max parallel compile jobs
-echo   --skip-deps           Skip automatic dependency installation
+echo   -d, --debug             Build runtime in Debug mode.
+echo   -j, --jobs N            Max parallel compile jobs.
+echo       --lift-jobs N       Max overlay lift jobs ^(currently capped at 4^).
+echo       --skip-lifter-build Reuse existing lifter binary if still up to date.
+echo       --force-extract     Force ROM extraction even when cache is valid.
+echo       --force-lift        Force binary lifting even when cache is valid.
+echo       --skip-deps         Skip automatic dependency installation.
+echo   -h, --help              Show this help text.
 exit /b 0
 
-:args_done
-if not exist "%ROM_PATH%" (
-    echo [ERROR] ROM file not found: %ROM_PATH%
+:parse_args
+if "%~1"=="" exit /b 0
+
+if "%~1"=="-d" (
+    set "DEBUG_MODE=1"
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="--debug" (
+    set "DEBUG_MODE=1"
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="-j" (
+    if "%~2"=="" (
+        echo [ERROR] --jobs requires a value.
+        exit /b 1
+    )
+    set "BUILD_JOBS=%~2"
+    shift /1
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="--jobs" (
+    if "%~2"=="" (
+        echo [ERROR] --jobs requires a value.
+        exit /b 1
+    )
+    set "BUILD_JOBS=%~2"
+    shift /1
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="--lift-jobs" (
+    if "%~2"=="" (
+        echo [ERROR] --lift-jobs requires a value.
+        exit /b 1
+    )
+    set "LIFT_JOBS=%~2"
+    shift /1
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="--skip-lifter-build" (
+    set "SKIP_LIFTER_BUILD=1"
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="--force-extract" (
+    set "FORCE_EXTRACT=1"
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="--force-lift" (
+    set "FORCE_LIFT=1"
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="--skip-deps" (
+    set "SKIP_DEPS=1"
+    shift /1
+    goto :parse_args
+)
+if "%~1"=="-h" (
+    call :usage
+    exit /b 0
+)
+if "%~1"=="--help" (
+    call :usage
+    exit /b 0
+)
+if defined ROM_PATH (
+    echo [ERROR] Too many positional arguments.
     exit /b 1
 )
 
-REM Install dependencies unless --skip-deps was specified
-if %SKIP_DEPS% equ 0 (
-    call :install_dependencies_silent
+set "ROM_PATH=%~f1"
+shift /1
+goto :parse_args
+
+:guard_against_msys2_path
+for /f "delims=" %%I in ('where cmake 2^>nul') do (
+    echo %%~fI | findstr /I "devkitpro msys2" >nul
+    if not errorlevel 1 (
+        echo [FATAL] Found MSYS2/devkitPro CMake in PATH: %%~fI
+        echo [FATAL] Remove MSYS2/devkitPro build tools from the global Windows PATH and retry.
+        exit /b 1
+    )
+)
+exit /b 0
+
+:install_dependencies
+echo [*] Checking and installing dependencies...
+
+cmake --version >nul 2>&1
+if errorlevel 1 if not exist "C:\Program Files\CMake\bin\cmake.exe" (
+    echo [*] Downloading and installing CMake...
+    powershell -NoProfile -Command ^
+        "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $out = Join-Path $env:TEMP 'cmake.msi'; (New-Object System.Net.WebClient).DownloadFile('https://github.com/Kitware/CMake/releases/download/v3.29.3/cmake-3.29.3-windows-x86_64.msi', $out); Start-Process 'msiexec.exe' -ArgumentList '/i',$out,'/quiet','/norestart','ADD_CMAKE_TO_PATH=System' -Wait -NoNewWindow; exit 0 } catch { Write-Host '[FATAL] Failed to install CMake'; exit 1 }" || exit /b 1
+)
+if exist "C:\Program Files\CMake\bin\cmake.exe" set "PATH=C:\Program Files\CMake\bin;%PATH%"
+
+where cl.exe >nul 2>&1
+if errorlevel 1 (
+    set "VSWHERE_PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    if exist "!VSWHERE_PATH!" (
+        for /f "usebackq delims=" %%I in (`"!VSWHERE_PATH!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+            if exist "%%~fI" goto :check_qt_install
+        )
+    )
+    echo [*] Downloading and installing Visual Studio Build Tools...
+    powershell -NoProfile -Command ^
+        "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $out = Join-Path $env:TEMP 'vs_buildtools.exe'; (New-Object System.Net.WebClient).DownloadFile('https://aka.ms/vs/17/release/vs_buildtools.exe', $out); Start-Process $out -ArgumentList '--quiet','--wait','--norestart','--nocache','--add','Microsoft.VisualStudio.Workload.VCTools' -Wait -NoNewWindow; exit 0 } catch { Write-Host '[FATAL] Failed to install VS Build Tools'; exit 1 }" || exit /b 1
 )
 
-REM Validate ROM checksum
-set "KNOWN_SHA256=a93deee92eef8e05c86d8b376c28f114c0a4e760c6d997cc0f69a19bbfbc624f"
-echo [*] Validating ROM checksum...
-for /f "skip=1 tokens=* delims=" %%# in ('certutil -hashfile "%ROM_PATH%" SHA256') do (
-    set "ACTUAL_SHA256=%%#"
-    goto :hash_done
+:check_qt_install
+call :find_qt_prefix >nul 2>&1
+if errorlevel 1 (
+    echo [*] Installing Qt6 headless via aqtinstall...
+    python --version >nul 2>&1 || (
+        echo [FATAL] Python is not in PATH, so Qt cannot be installed automatically.
+        exit /b 1
+    )
+    python -m pip install --upgrade pip aqtinstall || exit /b 1
+    python -m aqt install-qt windows desktop 6.6.3 win64_msvc2019_64 --outputdir C:\Qt || exit /b 1
+    call :find_qt_prefix >nul 2>&1 || (
+        echo [FATAL] Qt6Config.cmake still was not found after Qt installation.
+        exit /b 1
+    )
 )
-:hash_done
-set "ACTUAL_SHA256=!ACTUAL_SHA256: =!"
-set "ACTUAL_SHA256=!ACTUAL_SHA256:=!"
 
-if /I not "!ACTUAL_SHA256!"=="!KNOWN_SHA256!" (
-    echo [WARNING] ROM checksum mismatch. Expected: !KNOWN_SHA256! Got: !ACTUAL_SHA256!
+call :find_vulkan_sdk >nul 2>&1
+if not errorlevel 1 exit /b 0
+
+echo [*] Downloading and installing Vulkan SDK silently...
+powershell -NoProfile -Command ^
+    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $out = Join-Path $env:TEMP 'vulkan-installer.exe'; (New-Object System.Net.WebClient).DownloadFile('https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk-latest-windows.exe', $out); Start-Process -FilePath $out -ArgumentList '/S' -Wait -NoNewWindow; exit 0 } catch { Write-Host '[FATAL] Failed to install Vulkan SDK'; exit 1 }" || exit /b 1
+
+set "VULKAN_WAIT_TRIES=0"
+:wait_for_vulkan
+call :find_vulkan_sdk >nul 2>&1
+if not errorlevel 1 exit /b 0
+set /a VULKAN_WAIT_TRIES+=1
+if !VULKAN_WAIT_TRIES! geq 18 (
+    echo [FATAL] Vulkan SDK installation did not finish successfully.
+    exit /b 1
+)
+timeout /t 5 >nul
+goto :wait_for_vulkan
+
+:find_qt_prefix
+set "CMAKE_PREFIX_PATH="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$qt = Get-ChildItem -Path 'C:\Qt' -Recurse -Filter 'Qt6Config.cmake' -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1; if ($qt) { [Console]::WriteLine($qt.Directory.Parent.FullName.Replace('\','/')) }"`) do (
+    set "CMAKE_PREFIX_PATH=%%I"
+)
+if not defined CMAKE_PREFIX_PATH exit /b 1
+exit /b 0
+
+:find_vulkan_sdk
+if defined VULKAN_SDK if exist "%VULKAN_SDK%\Bin\glslc.exe" (
+    set "PATH=%VULKAN_SDK%\Bin;%PATH%"
+    exit /b 0
+)
+for /f "tokens=2,*" %%A in ('reg query "HKLM\System\CurrentControlSet\Control\Session Manager\Environment" /v VULKAN_SDK 2^>nul ^| find /I "VULKAN_SDK"') do set "VULKAN_SDK=%%B"
+if defined VULKAN_SDK if exist "%VULKAN_SDK%\Bin\glslc.exe" (
+    set "PATH=%VULKAN_SDK%\Bin;%PATH%"
+    exit /b 0
+)
+for /f "tokens=2,*" %%A in ('reg query "HKCU\Environment" /v VULKAN_SDK 2^>nul ^| find /I "VULKAN_SDK"') do set "VULKAN_SDK=%%B"
+if defined VULKAN_SDK if exist "%VULKAN_SDK%\Bin\glslc.exe" (
+    set "PATH=%VULKAN_SDK%\Bin;%PATH%"
+    exit /b 0
+)
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$sdk = Get-ChildItem 'C:\VulkanSDK' -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1; if ($sdk -and (Test-Path (Join-Path $sdk.FullName 'Bin\glslc.exe'))) { [Console]::WriteLine($sdk.FullName) }"`) do set "VULKAN_SDK=%%I"
+if defined VULKAN_SDK if exist "%VULKAN_SDK%\Bin\glslc.exe" (
+    set "PATH=%VULKAN_SDK%\Bin;%PATH%"
+    exit /b 0
+)
+exit /b 1
+
+:compute_sha256
+set "%~2="
+set "KH_HASH_TARGET=%~f1"
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath $env:KH_HASH_TARGET).Hash.ToLowerInvariant()"`) do set "%~2=%%I"
+if not defined %~2 exit /b 1
+exit /b 0
+
+:find_lifter_exe
+set "LIFTER_EXE="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$exe = Get-ChildItem 'build_lifter' -Recurse -Filter 'lifter_engine.exe' -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1; if ($exe) { [Console]::WriteLine($exe.FullName) }"`) do set "LIFTER_EXE=%%I"
+if not defined LIFTER_EXE exit /b 1
+exit /b 0
+
+:find_runtime_exe
+set "RUNTIME_EXE="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$exe = Get-ChildItem 'build' -Recurse -Filter 'recoded.exe' -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1; if ($exe) { [Console]::WriteLine($exe.FullName) }"`) do set "RUNTIME_EXE=%%I"
+if not defined RUNTIME_EXE exit /b 1
+exit /b 0
+
+:find_qt_runtime_paths
+set "QT_BIN_DIR="
+set "QT_WINDEPLOYQT="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$dll = Get-ChildItem 'C:\Qt' -Recurse -Filter 'Qt6Core.dll' -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1; if ($dll) { [Console]::WriteLine($dll.Directory.FullName) }"`) do set "QT_BIN_DIR=%%I"
+if defined QT_BIN_DIR if exist "%QT_BIN_DIR%\windeployqt.exe" set "QT_WINDEPLOYQT=%QT_BIN_DIR%\windeployqt.exe"
+if not defined QT_WINDEPLOYQT (
+    for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$tool = Get-ChildItem 'C:\Qt' -Recurse -Filter 'windeployqt.exe' -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1; if ($tool) { [Console]::WriteLine($tool.FullName) }"`) do set "QT_WINDEPLOYQT=%%I"
+)
+if not defined QT_BIN_DIR exit /b 1
+exit /b 0
+
+:cmake_configure
+set "SOURCE_DIR=%~1"
+set "BUILD_DIR=%~2"
+set "BUILD_TYPE=Release"
+if "%DEBUG_MODE%"=="1" set "BUILD_TYPE=Debug"
+cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_PREFIX_PATH="%CMAKE_PREFIX_PATH%" || exit /b 1
+exit /b 0
+
+:build_lifter
+call :find_lifter_exe >nul 2>&1
+
+if "%SKIP_LIFTER_BUILD%"=="1" (
+    if not defined LIFTER_EXE (
+        echo [ERROR] --skip-lifter-build was requested but lifter_engine.exe is missing.
+        exit /b 1
+    )
+    powershell -NoProfile -Command "$exe = Get-Item $env:LIFTER_EXE; $changed = Get-ChildItem 'lifter' -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $exe.LastWriteTimeUtc } | Select-Object -First 1; if ($changed) { exit 1 } else { exit 0 }" || (
+        echo [ERROR] Existing lifter build is stale; rerun without --skip-lifter-build.
+        exit /b 1
+    )
+    echo [*] Building Lifter Engine... (skipped by --skip-lifter-build)
+    exit /b 0
 )
 
-REM Step 0: Build lifter
+set "NEED_LIFTER_BUILD=1"
+if defined LIFTER_EXE if "%FORCE_LIFT%"=="0" (
+    powershell -NoProfile -Command "$exe = Get-Item $env:LIFTER_EXE; $changed = Get-ChildItem 'lifter' -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $exe.LastWriteTimeUtc } | Select-Object -First 1; if ($changed) { exit 1 } else { exit 0 }" >nul 2>&1
+    if not errorlevel 1 set "NEED_LIFTER_BUILD=0"
+)
+
+if "%NEED_LIFTER_BUILD%"=="0" (
+    echo [*] Building Lifter Engine... ^(cached, skipping^)
+    exit /b 0
+)
+
 echo [*] Building Lifter Engine...
 if not exist build_lifter mkdir build_lifter
-cd build_lifter
-cmake ..\lifter -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A x64 >nul 2>&1
-if errorlevel 1 cmake ..\lifter -DCMAKE_BUILD_TYPE=Release >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] CMake configuration failed
-    cd ..
-    exit /b 1
-)
-cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS% >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Lifter build failed
-    cd ..
-    exit /b 1
-)
-cd ..
-echo [*] Lifter Engine built successfully
+if exist build_lifter\CMakeCache.txt del /f /q build_lifter\CMakeCache.txt >nul 2>&1
+if exist build_lifter\CMakeFiles rmdir /s /q build_lifter\CMakeFiles >nul 2>&1
 
-REM Step 1: Extract ROM via ndstool
-echo [*] Extracting ROM...
+call :cmake_configure "lifter" "build_lifter" || exit /b 1
+cmake --build build_lifter --target lifter_engine --parallel %BUILD_JOBS% --config Release || exit /b 1
+call :find_lifter_exe || (
+    echo [ERROR] Built lifter_engine.exe could not be located.
+    exit /b 1
+)
+exit /b 0
+
+:extract_rom
 if not exist recoded mkdir recoded
-cd recoded
-set "NDSTOOL=..\tools\nds_extractor\ndstool.exe"
-if not exist "!NDSTOOL!" set "NDSTOOL=ndstool.exe"
-"!NDSTOOL!" -x "..\!ROM_PATH!" -9 arm9.bin -7 arm7.bin -y9 y9.bin -y7 y7.bin -d data -y overlay -t banner.bin -h header.bin >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] ROM extraction failed
-    cd ..
-    exit /b 1
-)
-cd ..
-echo [*] ROM extracted successfully
+set "EXTRACT_STAMP=recoded\.extract_stamp"
+set "EXTRACT_CACHE_KEY=rom_sha=!ACTUAL_SHA256!"
 
-REM Step 2: Run lifter on arm9.bin
-echo [*] Running lifter on arm9.bin...
-if not exist "runtime\src\generated" mkdir "runtime\src\generated"
-build_lifter\Release\lifter_engine.exe recoded\arm9.bin "runtime\src\generated\arm9_translated.cpp" 0x02000000 >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Lifter execution failed
-    exit /b 1
+if "%FORCE_EXTRACT%"=="0" if exist "%EXTRACT_STAMP%" if exist "recoded\arm9.bin" if exist "recoded\y9.bin" if exist "recoded\overlay" (
+    findstr /X /C:"!EXTRACT_CACHE_KEY!" "%EXTRACT_STAMP%" >nul 2>&1
+    if not errorlevel 1 (
+        echo [*] Extracting ROM... ^(cached, skipping^)
+        exit /b 0
+    )
 )
-echo [*] Lifter completed successfully
 
-REM Step 3: Compile with CMake
-echo [*] Configuring CMake...
+echo [*] Extracting ROM...
+set "NDSTOOL=tools\nds_extractor\ndstool.exe"
+if not exist "%NDSTOOL%" (
+    where ndstool.exe >nul 2>&1 || (
+        echo [ERROR] ndstool.exe was not found in tools\nds_extractor or PATH.
+        exit /b 1
+    )
+    set "NDSTOOL=ndstool.exe"
+)
+
+"%NDSTOOL%" -x "%ROM_PATH%" -9 recoded\arm9.bin -7 recoded\arm7.bin -y9 recoded\y9.bin -y7 recoded\y7.bin -d recoded\data -y recoded\overlay -t recoded\banner.bin -h recoded\header.bin || exit /b 1
+> "%EXTRACT_STAMP%" echo !EXTRACT_CACHE_KEY!
+exit /b 0
+
+:run_lifter
+set "GEN_DIR=runtime\src\generated"
+call :compute_sha256 "%LIFTER_EXE%" LIFTER_SHA256 || exit /b 1
+
+set "LIFT_STAMP=%GEN_DIR%\.lift_stamp"
+set "LIFT_CACHE_KEY=rom_sha=!ACTUAL_SHA256! lifter_sha=!LIFTER_SHA256!"
+
+if "%FORCE_LIFT%"=="0" if exist "%LIFT_STAMP%" if exist "%GEN_DIR%\master_registration.cpp" (
+    findstr /X /C:"!LIFT_CACHE_KEY!" "%LIFT_STAMP%" >nul 2>&1
+    if not errorlevel 1 (
+        echo [*] Running Binary Lifter... ^(cached, skipping^)
+        exit /b 0
+    )
+)
+
+echo [*] Running Binary Lifter...
+if exist "%GEN_DIR%" rmdir /s /q "%GEN_DIR%"
+mkdir "%GEN_DIR%" || exit /b 1
+
+echo [*] Lifting arm9.bin...
+"%LIFTER_EXE%" recoded\arm9.bin "%GEN_DIR%" 0x02000000 0x02000800 -1 || exit /b 1
+
+echo [*] Parsing y9.bin and lifting overlays...
+for /f "usebackq tokens=1,2" %%A in (`powershell -NoProfile -Command "$data = [System.IO.File]::ReadAllBytes('recoded\y9.bin'); for($i = 0; $i -lt ($data.Length / 32); $i++){ $offset = $i * 32; $id = [BitConverter]::ToUInt32($data, $offset); $ram = [BitConverter]::ToUInt32($data, $offset + 4); [Console]::WriteLine(('{0} {1}' -f $id, $ram.ToString('x8'))) }"`) do (
+    set "OVL_ID=%%A"
+    set "RAM_ADDR=%%B"
+    set "PADDED_ID=0000!OVL_ID!"
+    set "PADDED_ID=!PADDED_ID:~-4!"
+    set "OVL_FILE=recoded\overlay\overlay_!PADDED_ID!.bin"
+    if exist "!OVL_FILE!" (
+        echo [*] Lifting overlay !OVL_ID! at 0x!RAM_ADDR!...
+        "%LIFTER_EXE%" "!OVL_FILE!" "%GEN_DIR%" "0x!RAM_ADDR!" "0x!RAM_ADDR!" "!OVL_ID!" || exit /b 1
+    )
+)
+
+echo [*] Generating master registration...
+powershell -NoProfile -Command ^
+    "$genDir = 'runtime\src\generated';" ^
+    "$lines = New-Object System.Collections.Generic.List[string];" ^
+    "$lines.Add('#include ' + [char]34 + 'memory_map.h' + [char]34);" ^
+    "$lines.Add('void arm9_register(NDSMemory* mem);');" ^
+    "Get-ChildItem $genDir -Filter 'overlay_*_reg.cpp' | Sort-Object Name | ForEach-Object { if ($_.BaseName -match '^overlay_(\d+)_reg$') { $lines.Add(('void overlay_{0}_register(NDSMemory* mem);' -f $Matches[1])) } };" ^
+    "$lines.Add('void RegisterAllLiftedFunctions(NDSMemory* mem) {');" ^
+    "$lines.Add('    arm9_register(mem);');" ^
+    "Get-ChildItem $genDir -Filter 'overlay_*_reg.cpp' | Sort-Object Name | ForEach-Object { if ($_.BaseName -match '^overlay_(\d+)_reg$') { $lines.Add(('    overlay_{0}_register(mem);' -f $Matches[1])) } };" ^
+    "$lines.Add('}');" ^
+    "[System.IO.File]::WriteAllLines((Join-Path $genDir 'master_registration.cpp'), $lines)" || exit /b 1
+
+> "%LIFT_STAMP%" echo !LIFT_CACHE_KEY!
+exit /b 0
+
+:build_runtime
+echo [*] Configuring runtime build...
 if not exist build mkdir build
-cd build
+if exist build\CMakeCache.txt del /f /q build\CMakeCache.txt >nul 2>&1
+if exist build\CMakeFiles rmdir /s /q build\CMakeFiles >nul 2>&1
 
-REM Find Qt6 and set CMAKE_PREFIX_PATH
-set "CMAKE_PREFIX_PATH="
-for /d %%D in (C:\Qt\*) do (
-    if exist "%%D\6.?.*\msvc2022_64\lib\cmake\Qt6" (
-        set "CMAKE_PREFIX_PATH=%%D\6.?.*\msvc2022_64\lib\cmake"
-        goto qt_found
-    )
-)
-for /d %%D in (C:\Qt\*) do (
-    if exist "%%D\6.*\lib\cmake\Qt6" (
-        set "CMAKE_PREFIX_PATH=%%D\6.*\lib\cmake"
-        goto qt_found
-    )
-)
+call :cmake_configure "." "build" || exit /b 1
 
-:qt_found
-if "%DEBUG_MODE%"=="1" (
-    cmake .. -DCMAKE_BUILD_TYPE=Debug -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="!CMAKE_PREFIX_PATH!" >nul 2>&1
-    if errorlevel 1 cmake .. -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="!CMAKE_PREFIX_PATH!" >nul 2>&1
-) else (
-    cmake .. -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="!CMAKE_PREFIX_PATH!" >nul 2>&1
-    if errorlevel 1 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="!CMAKE_PREFIX_PATH!" >nul 2>&1
-)
+set "BUILD_CONFIG=Release"
+if "%DEBUG_MODE%"=="1" set "BUILD_CONFIG=Debug"
+echo [*] Building runtime_engine...
+cmake --build build --target runtime_engine --parallel %BUILD_JOBS% --config %BUILD_CONFIG% || exit /b 1
 
-if errorlevel 1 (
-    echo [ERROR] CMake configuration failed
-    cd ..
+call :find_runtime_exe || (
+    echo [ERROR] Built recoded.exe could not be located.
     exit /b 1
 )
+call :deploy_qt_runtime || exit /b 1
+exit /b 0
 
-echo [*] Building project...
-if "%BUILD_JOBS%"=="" (
-    cmake --build . --config Release --parallel %NUMBER_OF_PROCESSORS% >nul 2>&1
-) else (
-    cmake --build . --config Release --parallel %BUILD_JOBS% >nul 2>&1
-)
-
-if errorlevel 1 (
-    echo [ERROR] Build failed
-    cd ..
+:deploy_qt_runtime
+call :find_qt_runtime_paths || (
+    echo [ERROR] Qt runtime files could not be located under C:\Qt.
     exit /b 1
 )
-cd ..
+for %%I in ("%RUNTIME_EXE%") do set "RUNTIME_DIR=%%~dpI"
+
+echo [*] Deploying Qt runtime next to recoded.exe...
+if defined QT_WINDEPLOYQT (
+    set "DEPLOY_MODE=--release"
+    if "%DEBUG_MODE%"=="1" set "DEPLOY_MODE=--debug"
+    "%QT_WINDEPLOYQT%" %DEPLOY_MODE% --no-compiler-runtime "%RUNTIME_EXE%" || exit /b 1
+    exit /b 0
+)
+
+copy /y "%QT_BIN_DIR%\Qt6Core.dll" "%RUNTIME_DIR%" >nul || exit /b 1
+copy /y "%QT_BIN_DIR%\Qt6Gui.dll" "%RUNTIME_DIR%" >nul || exit /b 1
+copy /y "%QT_BIN_DIR%\Qt6Widgets.dll" "%RUNTIME_DIR%" >nul || exit /b 1
+if not exist "%RUNTIME_DIR%platforms" mkdir "%RUNTIME_DIR%platforms"
+copy /y "%QT_BIN_DIR%\..\plugins\platforms\qwindows.dll" "%RUNTIME_DIR%platforms\" >nul || exit /b 1
+exit /b 0
+
+:main
+set "SCRIPT_DIR=%~dp0"
+pushd "%SCRIPT_DIR%" >nul
+
+set "DEBUG_MODE=0"
+set "SKIP_DEPS=0"
+set "SKIP_LIFTER_BUILD=0"
+set "FORCE_EXTRACT=0"
+set "FORCE_LIFT=0"
+set "BUILD_JOBS="
+set "LIFT_JOBS="
+set "ROM_PATH="
+set "RUNTIME_EXE="
+set "LIFTER_EXE="
+
+call :guard_against_msys2_path || goto :fail
+call :parse_args %* || goto :fail
+
+if not defined ROM_PATH (
+    call :usage
+    goto :fail
+)
+
+if not exist "%ROM_PATH%" if exist "%ROM_PATH%.partaa" (
+    echo [*] Recombining split ROM...
+    copy /b "%ROM_PATH%.part*" "%ROM_PATH%" >nul || goto :fail
+)
+if not exist "%ROM_PATH%" (
+    echo [ERROR] ROM file not found: %ROM_PATH%
+    goto :fail
+)
+
+if "%SKIP_DEPS%"=="0" (
+    call :install_dependencies || goto :fail
+)
+
+if not defined BUILD_JOBS (
+    if defined NUMBER_OF_PROCESSORS (
+        set "BUILD_JOBS=%NUMBER_OF_PROCESSORS%"
+    ) else (
+        set "BUILD_JOBS=1"
+    )
+)
+if not defined LIFT_JOBS (
+    set "LIFT_JOBS=%BUILD_JOBS%"
+    powershell -NoProfile -Command "$jobs=[int]$env:LIFT_JOBS; if($jobs -gt 4){$jobs=4}; [Console]::WriteLine($jobs)" > "%TEMP%\kh_lift_jobs.txt" || goto :fail
+    set /p LIFT_JOBS=<"%TEMP%\kh_lift_jobs.txt"
+    del "%TEMP%\kh_lift_jobs.txt" >nul 2>&1
+)
+
+call :find_qt_prefix || (
+    echo [FATAL] Qt6Config.cmake was not found. Install Qt 6.6.3 MSVC 64-bit or rerun without --skip-deps.
+    goto :fail
+)
+call :find_vulkan_sdk || (
+    echo [FATAL] Vulkan SDK was not found. Install LunarG Vulkan SDK or rerun without --skip-deps.
+    goto :fail
+)
+
+echo [*] Using %BUILD_JOBS% compile jobs and %LIFT_JOBS% lift jobs.
+
+set "KNOWN_SHA256=929f36f1e09b6b0962ac718332033bbd519f2edede18a3ab65f425ddc66e3fd3"
+call :compute_sha256 "%ROM_PATH%" ACTUAL_SHA256 || goto :fail
+echo [*] Validating ROM checksum...
+echo [*] Calculated SHA-256: !ACTUAL_SHA256!
+if /I not "!ACTUAL_SHA256!"=="!KNOWN_SHA256!" (
+    echo [WARNING] Checksum does not match the known good US dump.
+    echo [WARNING] Proceeding anyway, but compilation or runtime errors may occur.
+)
+
+call :build_lifter || goto :fail
+call :extract_rom || goto :fail
+call :run_lifter || goto :fail
+call :build_runtime || goto :fail
 
 echo.
 echo ============================================================
-echo [SUCCESS] Build completed!
-echo [*] Executable: build\runtime\recoded.exe
+echo [SUCCESS] Build completed successfully.
+echo [*] Executable: !RUNTIME_EXE!
 echo ============================================================
 
+popd >nul
 exit /b 0
 
-REM ===================================================================
-REM Completely silent dependency installation
-REM ===================================================================
-:install_dependencies_silent
-echo [*] Checking and installing dependencies silently...
-
-REM Check and install CMake silently
-cmake --version >nul 2>&1
-if errorlevel 1 (
-    echo [*] Installing CMake...
-    REM Try Winget (silent)
-    winget install --silent --accept-source-agreements Kitware.CMake >nul 2>&1
-    if errorlevel 1 (
-        REM Try Chocolatey (silent)
-        choco install -y cmake --no-progress >nul 2>&1
-    )
-)
-
-REM Check for Visual Studio Build Tools
-where cl.exe >nul 2>&1
-if errorlevel 1 (
-    echo [*] Visual Studio Build Tools not found, attempting to install...
-    REM Try to install Build Tools silently via Winget
-    winget install --silent --accept-source-agreements Microsoft.VisualStudio.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools" >nul 2>&1
-)
-
-REM Find and configure Qt6
-set "QT6_FOUND=0"
-for /d %%D in (C:\Qt\*) do (
-    if exist "%%D\6.?.*\msvc2022_64\lib\cmake\Qt6" (
-        set "QT6_FOUND=1"
-        goto qt_check_done
-    )
-)
-for /d %%D in (C:\Qt\*) do (
-    if exist "%%D\6.*\lib\cmake\Qt6" (
-        set "QT6_FOUND=1"
-        goto qt_check_done
-    )
-)
-
-:qt_check_done
-if %QT6_FOUND% equ 0 (
-    echo [*] Installing Qt6 (this may take a few minutes)...
-    REM Try via winget
-    winget install --silent --accept-source-agreements Qt.Qt >nul 2>&1
-    if errorlevel 1 (
-        echo [*] Qt6 Winget install failed, attempting PowerShell download...
-        powershell -Command "try { (New-Object System.Net.WebClient).DownloadFile('https://download.qt.io/official_releases/online_installers/qt-online-installer-windows.exe', \"$env:TEMP\qt-installer.exe\"); Write-Host '[*] Qt6 installer downloaded to: %TEMP%\qt-installer.exe'; Write-Host '[*] Please run manually if needed' } catch { Write-Host '[!] Could not download Qt6. Please install manually from https://qt.io' }" >nul 2>&1
-    )
-)
-
-REM Find and configure Vulkan SDK
-if not exist "C:\VulkanSDK" (
-    echo [*] Installing Vulkan SDK...
-    REM Try Winget silent install
-    winget install --silent --accept-source-agreements LunarG.VulkanSDK >nul 2>&1
-    if errorlevel 1 (
-        REM Try PowerShell download
-        powershell -Command "try { (New-Object System.Net.WebClient).DownloadFile('https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk-latest-windows.exe', \"$env:TEMP\vulkan-installer.exe\"); Write-Host '[*] Vulkan installer downloaded'; cmd /c \"$env:TEMP\vulkan-installer.exe\" /S } catch { Write-Host '[!] Could not download Vulkan SDK' }" >nul 2>&1
-    )
-)
-
-echo [*] Dependencies ready
-exit /b 0
+:fail
+set "ERR=%ERRORLEVEL%"
+if not defined ERR set "ERR=1"
+popd >nul 2>nul
+exit /b %ERR%

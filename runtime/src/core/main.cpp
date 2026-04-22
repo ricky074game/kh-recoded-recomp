@@ -110,6 +110,25 @@ static bool ContainsSnapPath(const char* value) {
     return value && std::strstr(value, "/snap/") != nullptr;
 }
 
+static void UnsetEnvVar(const char* name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+static void SetEnvVarIfUnset(const char* name, const char* value) {
+    if (std::getenv(name)) {
+        return;
+    }
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 0);
+#endif
+}
+
 static void SanitizeSnapRuntimeEnv() {
     const bool running_under_snap =
         std::getenv("SNAP") != nullptr || std::getenv("SNAP_NAME") != nullptr;
@@ -119,11 +138,11 @@ static void SanitizeSnapRuntimeEnv() {
 
     bool changed = false;
     if (ContainsSnapPath(ld_library_path) || running_under_snap) {
-        unsetenv("LD_LIBRARY_PATH");
+        UnsetEnvVar("LD_LIBRARY_PATH");
         changed = true;
     }
     if (ContainsSnapPath(ld_preload)) {
-        unsetenv("LD_PRELOAD");
+        UnsetEnvVar("LD_PRELOAD");
         changed = true;
     }
 
@@ -410,12 +429,8 @@ int main(int argc, char* argv[]) {
 
     // Force Qt software rendering when no GPU is available to suppress
     // libEGL/MESA/ZINK errors in headless or VM environments.
-    if (!std::getenv("QT_OPENGL")) {
-        setenv("QT_OPENGL", "software", 0);
-    }
-    if (!std::getenv("LIBGL_ALWAYS_SOFTWARE")) {
-        setenv("LIBGL_ALWAYS_SOFTWARE", "1", 0);
-    }
+    SetEnvVarIfUnset("QT_OPENGL", "software");
+    SetEnvVarIfUnset("LIBGL_ALWAYS_SOFTWARE", "1");
 
     std::string data_dir = "recoded/data";
     bool data_dir_set = false;
