@@ -12,6 +12,7 @@ endif()
 find_package(SDL2 REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 set(SDL2_LINK_TARGETS)
 set(SDL2_INCLUDE_PATHS)
@@ -95,6 +96,7 @@ target_include_directories(runtime_core
 target_link_libraries(runtime_core
     PRIVATE
         ${SDL2_LINK_TARGETS}
+        Qt6::Widgets
         ${CAPSTONE_LINK_TARGETS}
         Threads::Threads
         Vulkan::Vulkan
@@ -119,6 +121,7 @@ target_include_directories(runtime_engine
 target_link_libraries(runtime_engine
     PRIVATE
         runtime_core
+        Qt6::Widgets
         lifter_core
         ${CAPSTONE_LINK_TARGETS}
         ${SDL2_LINK_TARGETS}

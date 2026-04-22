@@ -6,17 +6,25 @@
 #include <cmath>
 
 SDL2Renderer::SDL2Renderer(SDL_Renderer* sdl_renderer) {
-    m_framebuffer_top = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGBA8888, 
-                                          SDL_TEXTUREACCESS_STREAMING, 256, 192);
-    m_framebuffer_bottom = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGBA8888, 
-                                             SDL_TEXTUREACCESS_STREAMING, 256, 192);
+    m_framebuffer_top = nullptr;
+    m_framebuffer_bottom = nullptr;
+    if (sdl_renderer) {
+        m_framebuffer_top = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGBA8888,
+                                              SDL_TEXTUREACCESS_STREAMING, 256, 192);
+        m_framebuffer_bottom = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_RGBA8888,
+                                                 SDL_TEXTUREACCESS_STREAMING, 256, 192);
+    }
     std::memset(m_pixels_top, 0, sizeof(m_pixels_top));
     std::memset(m_pixels_bottom, 0, sizeof(m_pixels_bottom));
 }
 
 SDL2Renderer::~SDL2Renderer() {
-    SDL_DestroyTexture(m_framebuffer_top);
-    SDL_DestroyTexture(m_framebuffer_bottom);
+    if (m_framebuffer_top) {
+        SDL_DestroyTexture(m_framebuffer_top);
+    }
+    if (m_framebuffer_bottom) {
+        SDL_DestroyTexture(m_framebuffer_bottom);
+    }
 }
 
 // Simple edge function for rasterization
@@ -274,6 +282,10 @@ void SDL2Renderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
 }
 
 void SDL2Renderer::Present(SDL_Renderer* renderer, int x, int y, int w, int h) {
+    if (renderer == nullptr || m_framebuffer_top == nullptr || m_framebuffer_bottom == nullptr) {
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(m_render_mutex);
     
     SDL_UpdateTexture(m_framebuffer_top, nullptr, m_pixels_top, 256 * 4);

@@ -96,37 +96,33 @@ void InputManager::HandleKeyEvent(const SDL_KeyboardEvent& key) {
 
 void InputManager::HandleMouseEvent(const SDL_MouseButtonEvent& mouse) {
     if (mouse.button == SDL_BUTTON_LEFT) {
-        bool pressed = (mouse.state == SDL_PRESSED);
-        SetBit(extkeyin, 6, pressed); // Pen bit
-        
-        if (pressed) {
-            // Update touch X/Y
-            int raw_x = mouse.x - display_offset_x;
-            int raw_y = mouse.y - display_offset_y;
-            
-            float unscaled_x = raw_x / scale_factor;
-            float unscaled_y = raw_y / scale_factor;
-            
-            // Clamp to DS screen
-            touch_x = ClampTouchCoordinate(static_cast<int>(unscaled_x), 255);
-            touch_y = ClampTouchCoordinate(static_cast<int>(unscaled_y), 191);
-            CalibrateTouchScreen();
-        }
+        HandleTouchPoint(mouse.x, mouse.y, mouse.state == SDL_PRESSED);
     }
 }
 
 void InputManager::HandleMouseMotion(const SDL_MouseMotionEvent& motion) {
     if (motion.state & SDL_BUTTON_LMASK) {
-        int raw_x = motion.x - display_offset_x;
-        int raw_y = motion.y - display_offset_y;
-        
-        float unscaled_x = raw_x / scale_factor;
-        float unscaled_y = raw_y / scale_factor;
-        
-        touch_x = ClampTouchCoordinate(static_cast<int>(unscaled_x), 255);
-        touch_y = ClampTouchCoordinate(static_cast<int>(unscaled_y), 191);
-        CalibrateTouchScreen();
+        HandleTouchPoint(motion.x, motion.y, true);
     }
+}
+
+void InputManager::HandleTouchPoint(int x, int y, bool pressed) {
+    SetBit(extkeyin, 6, pressed); // Pen bit
+
+    if (!pressed) {
+        return;
+    }
+
+    const int raw_x = x - display_offset_x;
+    const int raw_y = y - display_offset_y;
+
+    const float unscaled_x = raw_x / scale_factor;
+    const float unscaled_y = raw_y / scale_factor;
+
+    // Clamp to DS screen.
+    touch_x = ClampTouchCoordinate(static_cast<int>(unscaled_x), 255);
+    touch_y = ClampTouchCoordinate(static_cast<int>(unscaled_y), 191);
+    CalibrateTouchScreen();
 }
 
 

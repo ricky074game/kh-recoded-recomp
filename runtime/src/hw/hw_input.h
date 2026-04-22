@@ -55,6 +55,9 @@ public:
     void HandleKeyEvent(const SDL_KeyboardEvent& key);
     void HandleMouseEvent(const SDL_MouseButtonEvent& mouse);
     void HandleMouseMotion(const SDL_MouseMotionEvent& motion);
+
+    // Backend-agnostic touch helper for native frontends.
+    void HandleTouchPoint(int x, int y, bool pressed);
     
     // Virtual Controller UI Check
     // Checks if the mouse coordinates fall into a drawn bounding box
