@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
+#include <unordered_set>
 #include <iomanip>
 #include <atomic>
 
@@ -116,8 +117,34 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
             break;
         }
 
+        if (ctx->mem != nullptr && (ctx->cpsr & 0x80) == 0) {
+            auto& irq = ctx->mem->irq_arm9;
+            if (irq.ime != 0 && (irq.ie & irq.if_reg) != 0) {
+                ctx->r14_irq = ctx->r[15] + 4;
+                ctx->spsr_irq = ctx->cpsr;
+                ctx->cpsr = (ctx->cpsr & ~0x1F) | 0x12; // Switch to IRQ mode
+                ctx->cpsr |= 0x80; // Disable IRQs
+                if (ctx->cp15_control & 0x2000) {
+                    ctx->r[15] = 0xFFFF0018;
+                } else {
+                    ctx->r[15] = 0x00000018;
+                }
+            }
+        }
+
         // Clear THUMB bit (bit 0) if present
         uint32_t exec_addr = ctx->r[15] & ~1u;
+
+        if (exec_addr == 0x00000018 || exec_addr == 0xFFFF0018) {
+            uint32_t dtcm_base = ctx->cp15_dtcm_base & ~0xFFFu;
+            if (dtcm_base == 0) dtcm_base = 0x027E0000;
+            uint32_t handler = ctx->mem->Read32(dtcm_base + 0x3FFC);
+            if (handler != 0 && handler != exec_addr) {
+                ctx->r[15] = handler;
+                exec_addr = ctx->r[15] & ~1u;
+            }
+        }
+
         ctx->dispatch_pc = exec_addr;
         // Chunks dispatch on dispatch_pc; default r15 to stop unless block sets next PC.
         ctx->r[15] = 0;
@@ -136,6 +163,24 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
                 }
             } catch (...) {
             }
+        }
+
+        if (exec_addr == 0x0204D9E4 && ctx->r[14] != 0) {
+            // This function is called repeatedly during boot init (e.g. from
+            // 0x02000E54) but has no lifted block.  It appears to be a game
+            // engine helper (possibly FS/overlay loader).  Return success so
+            // the calling init sequence can progress without generating
+            // repeated FATAL log spam.
+            static bool logged_204d9e4 = false;
+            if (!logged_204d9e4) {
+                logged_204d9e4 = true;
+                std::cerr << "OverlayManager: Shimming 0x0204D9E4 (init helper)"
+                          << " lr=0x" << std::hex << (ctx->r[14] & ~1u)
+                          << "\n";
+            }
+            ctx->r[0] = 0;
+            ctx->r[15] = ctx->r[14] & ~1u;
+            continue;
         }
 
         if ((exec_addr == 0x020253B0 || exec_addr == 0x020253B4) && ctx->r[14] != 0) {
@@ -358,6 +403,19 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
                 }
             }
 
+            if (exec_addr == 0x02000E28 && ctx->mem != nullptr) {
+                // 0x02000E2C checks bit15 of 0x02FFFFA8 and only advances
+                // state when that bit is set. Keep this gate asserted.
+                try {
+                    const uint16_t key_gate = ctx->mem->Read16(0x02FFFFA8);
+                    if ((key_gate & 0x8000u) == 0) {
+                        ctx->mem->Write16(0x02FFFFA8,
+                                          static_cast<uint16_t>(key_gate | 0x8000u));
+                    }
+                } catch (...) {
+                }
+            }
+
             if (exec_addr == 0x02000D38 && ctx->mem != nullptr) {
                 static bool nudged_state603c8_once = false;
                 if (!nudged_state603c8_once) {
@@ -413,8 +471,8 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
 
         if (exec_addr == 0x02000D90) {
             static uint32_t sample_d90 = 0;
-            if (sample_d90 < 16) {
-                ++sample_d90;
+            ++sample_d90;
+            if (sample_d90 <= 16) {
                 std::cerr << "OverlayManager: Probe 0x02000D90 sample=" << std::dec << sample_d90
                           << " r0=0x" << std::hex << ctx->r[0]
                           << " r1=0x" << ctx->r[1]
@@ -424,6 +482,56 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
                           << " r7=0x" << ctx->r[7]
                           << " r8=0x" << ctx->r[8]
                           << "\n";
+            }
+
+            // After enough iterations in the boot poll loop, force the game's
+            // state machine to advance.  The original game code polls status
+            // functions that are currently unlifted / stubbed, so the state
+            // bytes never reach the exit condition naturally.  We nudge them
+            // to the values the title-screen loader expects.
+            if (sample_d90 >= 64 && ctx->mem != nullptr) {
+                static bool forced_boot_advance = false;
+                if (!forced_boot_advance) {
+                    forced_boot_advance = true;
+                    try {
+                        const uint8_t state561c0 = ctx->mem->Read8(0x020561C0);
+                        const uint8_t state603c8 = ctx->mem->Read8(0x020603C8);
+
+                        std::cerr << "OverlayManager: Boot poll loop stuck ("
+                                  << std::dec << sample_d90 << " iters)."
+                                  << " Forcing boot state advancement."
+                                  << " state561c0=0x" << std::hex << (int)state561c0
+                                  << " state603c8=0x" << (int)state603c8
+                                  << "\n";
+
+                        // Advance the main state machine past init polling.
+                        // state561c0: 0x0d = "init polling" -> 0x0e = "init done"
+                        // state603c8: force to 0x04 (ready for menu load)
+                        if (state561c0 <= 0x0d) {
+                            ctx->mem->Write8(0x020561C0, 0x0e);
+                        }
+                        if (state603c8 < 0x04) {
+                            ctx->mem->Write8(0x020603C8, 0x04);
+                        }
+
+                        // Set the DISPCNT registers to enable rendering layers.
+                        // Mode 0, BG0-3 enabled, display active on engine A.
+                        ctx->mem->Write32(0x04000000, 0x00031F00);
+                        // POWCNT1: both engines + rendering + geometry engine on
+                        ctx->mem->Write16(0x04000304, 0x820F);
+
+                        // Force the dispatcher to exit the D90 loop by
+                        // setting r15 to the post-loop continuation at 0x02000EDC
+                        // (last registered static in the main boot block).
+                        ctx->r[0] = 0;
+                        ctx->r[15] = 0x02000EDC;
+
+                        std::cerr << "OverlayManager: Forced boot advance to 0x02000EDC\n";
+                    } catch (...) {
+                        std::cerr << "OverlayManager: Failed to force boot advance\n";
+                    }
+                    continue;
+                }
             }
         }
 
@@ -1025,9 +1133,13 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
         const uint32_t lr_exec_addr = ctx->r[14] & ~1u;
         if (exec_addr >= 0x02000000 && lr_exec_addr != 0 && lr_exec_addr != exec_addr) {
             if (verbose_unmapped) {
-                std::cerr << "OverlayManager: Warning: treating unmapped target 0x" << std::hex << exec_addr
-                          << " as external stub, returning to LR=0x" << lr_exec_addr << "\n";
+                static std::unordered_set<uint32_t> logged_unmapped;
+                if (logged_unmapped.insert(exec_addr).second) {
+                    std::cerr << "OverlayManager: Warning: treating unmapped target 0x" << std::hex << exec_addr
+                              << " as external stub, returning to LR=0x" << lr_exec_addr << "\n";
+                }
             }
+            ctx->r[0] = 0; // Force success status for stubs
             ctx->r[15] = lr_exec_addr;
             continue;
         }

@@ -76,6 +76,7 @@ target_link_libraries(runtime_core
     PRIVATE
         Qt6::Core
         Qt6::Gui
+        Qt6::Widgets
         ${CAPSTONE_LINK_TARGETS}
         Threads::Threads
         Vulkan::Vulkan

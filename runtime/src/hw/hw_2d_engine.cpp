@@ -451,11 +451,6 @@ void NDS2DEngine::SubmitFrame(const uint8_t* oam_data,
                               size_t palette_size) {
     if (!renderer) return;
 
-    (void)vram_data;
-    (void)vram_size;
-    (void)palette_data;
-    (void)palette_size;
-
     // Phase 4: Hardware evaluation before rasterization submission
     CalculateAffineTransform();
     BlendAlphaLayers();
@@ -472,7 +467,11 @@ void NDS2DEngine::SubmitFrame(const uint8_t* oam_data,
                             bg_layers,
                             blend,
                             windows,
-                            !is_sub_engine);
+                            !is_sub_engine,
+                            vram_data,
+                            vram_size,
+                            palette_data,
+                            palette_size);
 }
 
 

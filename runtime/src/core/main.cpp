@@ -371,8 +371,13 @@ static void RunTimingThread() {
             }
 
             const uint8_t* oam_ptr = g_memory.GetOAM();
-            g_memory.GetEngine2DA().SubmitFrame(oam_ptr);
-            g_memory.GetEngine2DB().SubmitFrame(oam_ptr);
+            const uint8_t* vram_ptr = g_memory.GetVRAM();
+            size_t vram_size = g_memory.GetVRAMSize();
+            const uint8_t* palette_ptr = g_memory.GetPaletteRAM();
+            size_t palette_size = g_memory.GetPaletteRAMSize();
+            
+            g_memory.GetEngine2DA().SubmitFrame(oam_ptr, vram_ptr, vram_size, palette_ptr, palette_size);
+            g_memory.GetEngine2DB().SubmitFrame(oam_ptr + 1024, vram_ptr, vram_size, palette_ptr, palette_size);
 
             next_vblank += vblank_interval;
         } else {
@@ -392,6 +397,15 @@ int main(int argc, char* argv[]) {
     std::signal(SIGSEGV, CrashHandler);
     std::signal(SIGABRT, CrashHandler);
     SanitizeSnapRuntimeEnv();
+
+    // Force Qt software rendering when no GPU is available to suppress
+    // libEGL/MESA/ZINK errors in headless or VM environments.
+    if (!std::getenv("QT_OPENGL")) {
+        setenv("QT_OPENGL", "software", 0);
+    }
+    if (!std::getenv("LIBGL_ALWAYS_SOFTWARE")) {
+        setenv("LIBGL_ALWAYS_SOFTWARE", "1", 0);
+    }
 
     std::string data_dir = "recoded/data";
     bool data_dir_set = false;

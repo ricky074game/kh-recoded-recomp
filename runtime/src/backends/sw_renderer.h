@@ -24,11 +24,19 @@ public:
                        const std::array<BGLayer2D, 4>& bg_layers,
                        const BlendControl& blend,
                        const WindowControl& windows,
-                       bool render_to_top) override;
+                       bool render_to_top,
+                       const uint8_t* vram_data = nullptr,
+                       size_t vram_size = 0,
+                       const uint8_t* palette_data = nullptr,
+                       size_t palette_size = 0) override;
 
     // Snapshot both DS framebuffers for multi-window presentation.
     void CopyFramebuffers(std::array<uint32_t, 256 * 192>& top,
                           std::array<uint32_t, 256 * 192>& bottom);
+
+    // Directly set both framebuffers from external pixel arrays (used by
+    // the title screen loader to bypass the normal rendering pipeline).
+    void SetFramebuffers(const uint32_t* top, const uint32_t* bottom);
 
 private:
     std::mutex m_render_mutex;

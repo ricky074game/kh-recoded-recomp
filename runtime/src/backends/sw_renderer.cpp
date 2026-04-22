@@ -165,63 +165,267 @@ void SoftwareRenderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
                                  const std::array<BGLayer2D, 4>& bg_layers,
                                  const BlendControl& blend,
                                  const WindowControl& windows,
-                                 bool render_to_top) {
+                                 bool render_to_top,
+                                 const uint8_t* vram_data,
+                                 size_t vram_size,
+                                 const uint8_t* palette_data,
+                                 size_t palette_size) {
     std::lock_guard<std::mutex> lock(m_render_mutex);
 
     uint32_t* target_pixels = render_to_top ? m_pixels_top : m_pixels_bottom;
     for (int i = 0; i < 256 * 192; ++i) target_pixels[i] = 0x000000FF;
 
-    (void)bg_layers;
-    (void)blend;
-    (void)windows;
+    const bool have_vram = (vram_data != nullptr && vram_size > 0);
+    const bool have_palette = (palette_data != nullptr && palette_size > 0);
 
-    // Render BG and OBJ by priority (3 = lowest, 0 = highest).
+    // --- Render BG and OBJ by priority (3 = lowest, 0 = highest) ---
     for (int p = 3; p >= 0; --p) {
+        // --- BG layers at this priority ---
         for (int i = 0; i < 4; ++i) {
             const auto& bg = bg_layers[i];
             if (!bg.enabled || bg.priority != p) continue;
 
-            int32_t current_ref_x = bg.affine.ref_x;
-            int32_t current_ref_y = bg.affine.ref_y;
+            if (have_vram && have_palette && bg.mode == 0) {
+                // ---- Text mode: decode real tiles from VRAM ----
+                // Engine A: char_base selects tile data in 16KB blocks
+                // Engine A: screen_base selects tile map in 2KB blocks
+                // VRAM layout for Engine A BG: starts at offset 0 in VRAM
+                const uint32_t char_offset =
+                    static_cast<uint32_t>(bg.control.char_base) * 0x4000;
+                const uint32_t screen_offset =
+                    static_cast<uint32_t>(bg.control.screen_base) * 0x0800;
+                const bool is_8bpp = bg.control.is_8bpp;
+                const int tile_bytes = is_8bpp ? 64 : 32;
 
-            for (int y = 0; y < 192; ++y) {
-                int32_t map_x = current_ref_x;
-                int32_t map_y = current_ref_y;
+                const int map_w = bg.control.map_width;
+                const int map_h = bg.control.map_height;
 
-                for (int x = 0; x < 256; ++x) {
-                    const uint8_t windowMask = ResolveWindowMask(windows, x, y);
-                    const bool bg_enabled_in_window = ((windowMask >> i) & 0x1) != 0;
-                    const bool effects_enabled = ((windowMask >> 5) & 0x1) != 0;
-                    if (!bg_enabled_in_window) continue;
+                for (int y = 0; y < 192; ++y) {
+                    for (int x = 0; x < 256; ++x) {
+                        const uint8_t windowMask = ResolveWindowMask(windows, x, y);
+                        const bool bg_in_window = ((windowMask >> i) & 0x1) != 0;
+                        const bool effects_enabled = ((windowMask >> 5) & 0x1) != 0;
+                        if (!bg_in_window) continue;
 
-                    int px_x = 0;
-                    int px_y = 0;
+                        // Apply scrolling
+                        int px_x = (x + bg.scroll_x) % map_w;
+                        int px_y = (y + bg.scroll_y) % map_h;
+                        if (px_x < 0) px_x += map_w;
+                        if (px_y < 0) px_y += map_h;
 
-                    if (bg.mode == 0) {
-                        px_x = (x + bg.scroll_x) & 0x1FF;
-                        px_y = (y + bg.scroll_y) & 0x1FF;
-                    } else {
-                        px_x = map_x >> 8;
-                        px_y = map_y >> 8;
+                        // Determine which 256x256 block we're in
+                        // (for screen sizes > 256x256)
+                        int block_x = px_x / 256;
+                        int block_y = px_y / 256;
+                        int local_x = px_x % 256;
+                        int local_y = px_y % 256;
+
+                        // Block offset in the screen map
+                        uint32_t block_offset = 0;
+                        if (bg.control.screen_size == 0) {
+                            block_offset = 0;
+                        } else if (bg.control.screen_size == 1) {
+                            // 512x256: 2 blocks side by side
+                            block_offset = block_x * 0x800;
+                        } else if (bg.control.screen_size == 2) {
+                            // 256x512: 2 blocks stacked
+                            block_offset = block_y * 0x800;
+                        } else {
+                            // 512x512: 2x2 grid
+                            block_offset = (block_y * 2 + block_x) * 0x800;
+                        }
+
+                        // Tile coordinates within the 256x256 block
+                        int tile_x = local_x / 8;
+                        int tile_y = local_y / 8;
+                        int pixel_in_tile_x = local_x % 8;
+                        int pixel_in_tile_y = local_y % 8;
+
+                        // Read the screen map entry (2 bytes per tile)
+                        uint32_t map_addr = screen_offset + block_offset +
+                                            (tile_y * 32 + tile_x) * 2;
+                        if (map_addr + 2 > vram_size) continue;
+
+                        uint16_t map_entry =
+                            static_cast<uint16_t>(vram_data[map_addr]) |
+                            (static_cast<uint16_t>(vram_data[map_addr + 1]) << 8);
+
+                        uint16_t tile_idx = map_entry & 0x3FF;
+                        bool h_flip = (map_entry >> 10) & 1;
+                        bool v_flip = (map_entry >> 11) & 1;
+                        uint8_t pal_num = (map_entry >> 12) & 0xF;
+
+                        // Apply flip
+                        int src_px = h_flip ? (7 - pixel_in_tile_x) : pixel_in_tile_x;
+                        int src_py = v_flip ? (7 - pixel_in_tile_y) : pixel_in_tile_y;
+
+                        // Read the tile pixel from character data
+                        uint32_t tile_addr = char_offset +
+                            static_cast<uint32_t>(tile_idx) * tile_bytes;
+                        int color_idx;
+
+                        if (is_8bpp) {
+                            uint32_t byte_addr = tile_addr + src_py * 8 + src_px;
+                            if (byte_addr >= vram_size) continue;
+                            color_idx = vram_data[byte_addr];
+                        } else {
+                            uint32_t byte_addr = tile_addr + src_py * 4 + src_px / 2;
+                            if (byte_addr >= vram_size) continue;
+                            uint8_t byte_val = vram_data[byte_addr];
+                            color_idx = (src_px & 1) ?
+                                ((byte_val >> 4) & 0x0F) : (byte_val & 0x0F);
+                        }
+
+                        if (color_idx == 0) continue;  // Transparent
+
+                        // Look up in palette RAM
+                        uint32_t pal_addr;
+                        if (is_8bpp) {
+                            pal_addr = static_cast<uint32_t>(color_idx) * 2;
+                        } else {
+                            pal_addr = (static_cast<uint32_t>(pal_num) * 16 +
+                                        color_idx) * 2;
+                        }
+                        // BG palette for engine A starts at offset 0,
+                        // for engine B at offset 0x200 (handled by caller)
+                        if (pal_addr + 2 > palette_size) continue;
+
+                        uint16_t rgb555 =
+                            static_cast<uint16_t>(palette_data[pal_addr]) |
+                            (static_cast<uint16_t>(palette_data[pal_addr + 1]) << 8);
+
+                        uint32_t r = ((rgb555 >> 0)  & 0x1F) * 255 / 31;
+                        uint32_t g = ((rgb555 >> 5)  & 0x1F) * 255 / 31;
+                        uint32_t b = ((rgb555 >> 10) & 0x1F) * 255 / 31;
+
+                        uint32_t src_color = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+                        uint32_t& dst = target_pixels[y * 256 + x];
+                        dst = BlendPixel(dst, src_color, blend, effects_enabled);
+                    }
+                }
+            } else if (have_vram && have_palette && bg.mode == 1) {
+                // ---- Affine mode ----
+                const uint32_t char_offset =
+                    static_cast<uint32_t>(bg.control.char_base) * 0x4000;
+                const uint32_t screen_offset =
+                    static_cast<uint32_t>(bg.control.screen_base) * 0x0800;
+
+                // Affine BGs use 8bpp, map entries are single bytes (tile index)
+                int map_dim;  // map is square: 128, 256, 512, 1024 pixels
+                switch (bg.control.screen_size) {
+                    case 0: map_dim = 128; break;
+                    case 1: map_dim = 256; break;
+                    case 2: map_dim = 512; break;
+                    default: map_dim = 1024; break;
+                }
+                int tiles_per_row = map_dim / 8;
+
+                int32_t ref_x = bg.affine.ref_x;
+                int32_t ref_y = bg.affine.ref_y;
+
+                for (int y = 0; y < 192; ++y) {
+                    int32_t map_x = ref_x;
+                    int32_t map_y = ref_y;
+
+                    for (int x = 0; x < 256; ++x) {
+                        const uint8_t windowMask = ResolveWindowMask(windows, x, y);
+                        const bool bg_in_window = ((windowMask >> i) & 0x1) != 0;
+                        const bool effects_enabled = ((windowMask >> 5) & 0x1) != 0;
+                        if (!bg_in_window) { map_x += bg.affine.pa; map_y += bg.affine.pc; continue; }
+
+                        int px_x = map_x >> 8;
+                        int px_y = map_y >> 8;
+
+                        if (bg.control.wrap) {
+                            px_x = ((px_x % map_dim) + map_dim) % map_dim;
+                            px_y = ((px_y % map_dim) + map_dim) % map_dim;
+                        } else if (px_x < 0 || px_x >= map_dim || px_y < 0 || px_y >= map_dim) {
+                            map_x += bg.affine.pa;
+                            map_y += bg.affine.pc;
+                            continue;
+                        }
+
+                        int tile_x = px_x / 8;
+                        int tile_y = px_y / 8;
+                        int in_tile_x = px_x % 8;
+                        int in_tile_y = px_y % 8;
+
+                        uint32_t map_addr = screen_offset +
+                            static_cast<uint32_t>(tile_y * tiles_per_row + tile_x);
+                        if (map_addr >= vram_size) { map_x += bg.affine.pa; map_y += bg.affine.pc; continue; }
+
+                        uint8_t tile_idx = vram_data[map_addr];
+                        uint32_t tile_addr = char_offset +
+                            static_cast<uint32_t>(tile_idx) * 64 + in_tile_y * 8 + in_tile_x;
+                        if (tile_addr >= vram_size) { map_x += bg.affine.pa; map_y += bg.affine.pc; continue; }
+
+                        int color_idx = vram_data[tile_addr];
+                        if (color_idx == 0) { map_x += bg.affine.pa; map_y += bg.affine.pc; continue; }
+
+                        uint32_t pal_addr = static_cast<uint32_t>(color_idx) * 2;
+                        if (pal_addr + 2 > palette_size) { map_x += bg.affine.pa; map_y += bg.affine.pc; continue; }
+
+                        uint16_t rgb555 =
+                            static_cast<uint16_t>(palette_data[pal_addr]) |
+                            (static_cast<uint16_t>(palette_data[pal_addr + 1]) << 8);
+                        uint32_t r = ((rgb555 >> 0)  & 0x1F) * 255 / 31;
+                        uint32_t g = ((rgb555 >> 5)  & 0x1F) * 255 / 31;
+                        uint32_t b = ((rgb555 >> 10) & 0x1F) * 255 / 31;
+
+                        uint32_t src_color = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+                        uint32_t& dst = target_pixels[y * 256 + x];
+                        dst = BlendPixel(dst, src_color, blend, effects_enabled);
+
                         map_x += bg.affine.pa;
                         map_y += bg.affine.pc;
                     }
 
-                    if (px_x < 0 || px_x >= 512 || px_y < 0 || px_y >= 512) continue;
-
-                    const bool tile_on = ((px_x / 8) + (px_y / 8)) % 2 == 0;
-                    if (!tile_on) continue;
-
-                    const uint32_t src = PackRGBA((i * 60) + 80, px_x & 0xFF, px_y & 0xFF, 0xFF);
-                    uint32_t& dst = target_pixels[y * 256 + x];
-                    dst = BlendPixel(dst, src, blend, effects_enabled);
+                    ref_x += bg.affine.pb;
+                    ref_y += bg.affine.pd;
                 }
+            } else {
+                // ---- Fallback: checkerboard pattern (no VRAM data available) ----
+                int32_t current_ref_x = bg.affine.ref_x;
+                int32_t current_ref_y = bg.affine.ref_y;
 
-                current_ref_x += bg.affine.pb;
-                current_ref_y += bg.affine.pd;
+                for (int y = 0; y < 192; ++y) {
+                    int32_t map_x = current_ref_x;
+                    int32_t map_y = current_ref_y;
+
+                    for (int x = 0; x < 256; ++x) {
+                        const uint8_t windowMask = ResolveWindowMask(windows, x, y);
+                        const bool bg_enabled_in_window = ((windowMask >> i) & 0x1) != 0;
+                        const bool effects_enabled = ((windowMask >> 5) & 0x1) != 0;
+                        if (!bg_enabled_in_window) continue;
+
+                        int px_x, px_y;
+                        if (bg.mode == 0) {
+                            px_x = (x + bg.scroll_x) & 0x1FF;
+                            px_y = (y + bg.scroll_y) & 0x1FF;
+                        } else {
+                            px_x = map_x >> 8;
+                            px_y = map_y >> 8;
+                            map_x += bg.affine.pa;
+                            map_y += bg.affine.pc;
+                        }
+
+                        if (px_x < 0 || px_x >= 512 || px_y < 0 || px_y >= 512) continue;
+
+                        const bool tile_on = ((px_x / 8) + (px_y / 8)) % 2 == 0;
+                        if (!tile_on) continue;
+
+                        const uint32_t src = PackRGBA((i * 60) + 80, px_x & 0xFF, px_y & 0xFF, 0xFF);
+                        uint32_t& dst = target_pixels[y * 256 + x];
+                        dst = BlendPixel(dst, src, blend, effects_enabled);
+                    }
+
+                    current_ref_x += bg.affine.pb;
+                    current_ref_y += bg.affine.pd;
+                }
             }
         }
 
+        // --- OBJ sprites at this priority ---
         for (const auto& sprite : sprites) {
             if (sprite.priority != p) continue;
 
@@ -231,6 +435,13 @@ void SoftwareRenderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
             const int sh = static_cast<int>(sprite.height);
             const int cx = sw / 2;
             const int cy = sh / 2;
+
+            // OBJ tile data is separate from BG tile data.
+            // Engine A OBJ VRAM offset: typically at 0x10000 in the VRAM
+            // (after the first 64KB used for BG).
+            // This offset depends on DISPCNT OBJ Character VRAM mapping bit.
+            const uint32_t obj_vram_base = 0x10000;
+            const int tile_bytes = sprite.is_8bpp ? 64 : 32;
 
             for (int py = 0; py < sh; ++py) {
                 for (int px = 0; px < sw; ++px) {
@@ -244,6 +455,9 @@ void SoftwareRenderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
                         const int ty = (sprite.affine_pc * dx + sprite.affine_pd * dy) >> 16;
                         src_x = tx + cx;
                         src_y = ty + cy;
+                    } else {
+                        if (sprite.hflip) src_x = sw - 1 - px;
+                        if (sprite.vflip) src_y = sh - 1 - py;
                     }
 
                     if (src_x < 0 || src_x >= sw || src_y < 0 || src_y >= sh) continue;
@@ -257,16 +471,69 @@ void SoftwareRenderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
                     const bool effects_enabled = ((windowMask >> 5) & 0x1) != 0;
                     if (!obj_enabled_in_window) continue;
 
-                    const bool opaque_pixel = ((src_x + src_y + sprite.tile_index) & 0x3) != 0;
-                    if (!opaque_pixel) continue;
+                    if (have_vram && have_palette) {
+                        // Decode actual OBJ tile pixel from VRAM
+                        // NDS uses 1D OBJ mapping (common setting):
+                        // tile address = base + tile_index * (32 or 64) + in-tile offset
+                        int tiles_w = sw / 8;
+                        int tile_col = src_x / 8;
+                        int tile_row = src_y / 8;
+                        int in_tile_x = src_x % 8;
+                        int in_tile_y = src_y % 8;
 
-                    const uint32_t src = PackRGBA(
-                        180 + (sprite.tile_index % 60),
-                        ((sprite.tile_index * 13) + src_x * 5) & 0xFF,
-                        ((sprite.tile_index * 7) + src_y * 9) & 0xFF,
-                        0xFF);
-                    uint32_t& dst = target_pixels[ty * 256 + tx];
-                    dst = BlendPixel(dst, src, blend, effects_enabled);
+                        uint32_t tile_num = sprite.tile_index + tile_row * tiles_w + tile_col;
+                        uint32_t tile_addr = obj_vram_base +
+                            tile_num * static_cast<uint32_t>(tile_bytes) +
+                            in_tile_y * (sprite.is_8bpp ? 8 : 4);
+
+                        int color_idx;
+                        if (sprite.is_8bpp) {
+                            uint32_t byte_addr = tile_addr + in_tile_x;
+                            if (byte_addr >= vram_size) continue;
+                            color_idx = vram_data[byte_addr];
+                        } else {
+                            uint32_t byte_addr = tile_addr + in_tile_x / 2;
+                            if (byte_addr >= vram_size) continue;
+                            uint8_t byte_val = vram_data[byte_addr];
+                            color_idx = (in_tile_x & 1) ?
+                                ((byte_val >> 4) & 0x0F) : (byte_val & 0x0F);
+                        }
+
+                        if (color_idx == 0) continue;  // Transparent
+
+                        // OBJ palette starts at offset 0x200 in palette RAM
+                        uint32_t pal_addr;
+                        if (sprite.is_8bpp) {
+                            pal_addr = 0x200 + static_cast<uint32_t>(color_idx) * 2;
+                        } else {
+                            pal_addr = 0x200 +
+                                (static_cast<uint32_t>(sprite.palette) * 16 + color_idx) * 2;
+                        }
+                        if (pal_addr + 2 > palette_size) continue;
+
+                        uint16_t rgb555 =
+                            static_cast<uint16_t>(palette_data[pal_addr]) |
+                            (static_cast<uint16_t>(palette_data[pal_addr + 1]) << 8);
+                        uint32_t r = ((rgb555 >> 0)  & 0x1F) * 255 / 31;
+                        uint32_t g = ((rgb555 >> 5)  & 0x1F) * 255 / 31;
+                        uint32_t b = ((rgb555 >> 10) & 0x1F) * 255 / 31;
+
+                        uint32_t src_color = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+                        uint32_t& dst = target_pixels[ty * 256 + tx];
+                        dst = BlendPixel(dst, src_color, blend, effects_enabled);
+                    } else {
+                        // Fallback pattern when no VRAM data
+                        const bool opaque_pixel = ((src_x + src_y + sprite.tile_index) & 0x3) != 0;
+                        if (!opaque_pixel) continue;
+
+                        const uint32_t src = PackRGBA(
+                            180 + (sprite.tile_index % 60),
+                            ((sprite.tile_index * 13) + src_x * 5) & 0xFF,
+                            ((sprite.tile_index * 7) + src_y * 9) & 0xFF,
+                            0xFF);
+                        uint32_t& dst = target_pixels[ty * 256 + tx];
+                        dst = BlendPixel(dst, src, blend, effects_enabled);
+                    }
                 }
             }
         }
@@ -278,4 +545,14 @@ void SoftwareRenderer::CopyFramebuffers(std::array<uint32_t, 256 * 192>& top,
     std::lock_guard<std::mutex> lock(m_render_mutex);
     std::copy(std::begin(m_pixels_top), std::end(m_pixels_top), top.begin());
     std::copy(std::begin(m_pixels_bottom), std::end(m_pixels_bottom), bottom.begin());
+}
+
+void SoftwareRenderer::SetFramebuffers(const uint32_t* top, const uint32_t* bottom) {
+    std::lock_guard<std::mutex> lock(m_render_mutex);
+    if (top) {
+        std::memcpy(m_pixels_top, top, sizeof(m_pixels_top));
+    }
+    if (bottom) {
+        std::memcpy(m_pixels_bottom, bottom, sizeof(m_pixels_bottom));
+    }
 }

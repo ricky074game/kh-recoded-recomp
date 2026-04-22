@@ -27,7 +27,9 @@ namespace Core::Dispatcher {
     void LoadOverlay(int overlay_id) {
         if (!g_overlay_manager) return;
 
-        if (overlay_id >= g_overlay_manager->table.size()) {
+        if (overlay_id < 0) return;
+
+        if (static_cast<size_t>(overlay_id) >= g_overlay_manager->table.size()) {
             g_overlay_manager->table.resize(overlay_id + 1);
         }
 
@@ -37,7 +39,9 @@ namespace Core::Dispatcher {
     void UnloadOverlay(int overlay_id) {
         if (!g_overlay_manager) return;
 
-        if (overlay_id < g_overlay_manager->table.size()) {
+        if (overlay_id < 0) return;
+
+        if (static_cast<size_t>(overlay_id) < g_overlay_manager->table.size()) {
             uint32_t load_addr = g_overlay_manager->table[overlay_id].ram_address;
             g_overlay_manager->active_overlays.erase(load_addr);
         }
