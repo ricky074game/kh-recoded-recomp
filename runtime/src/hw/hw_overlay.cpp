@@ -2,6 +2,7 @@
 #include "hw_irq.h"
 #include "cpu_context.h"
 #include "memory_map.h"
+#include "hw_bios.h"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -121,6 +122,7 @@ void OverlayManager::InvalidateOverlayCache(const std::vector<uint8_t>& main_ram
 // ============================================================================
 // Called by 'BX rX' or 'BLX rX' when the target address is non-constant.
 void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_address) {
+    HwBios::SetActiveContext(ctx);
     ctx->r[15] = target_address;
     thread_local uint32_t prev_exec_addr = 0;
     thread_local uint32_t same_exec_addr_count = 0;
@@ -1103,4 +1105,6 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
 
         throw std::runtime_error("Segfault in Dynamic Dispatch Code Execution");
     }
+
+    HwBios::SetActiveContext(nullptr);
 }
