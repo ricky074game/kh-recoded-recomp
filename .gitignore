@@ -10,3 +10,4 @@ debug_log.txt
 docs/DEBUG_LAST_STATUS.md
 recoded.nds
 !recoded.nds.part*
+vcpkg/
