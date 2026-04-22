@@ -57,6 +57,9 @@ public:
     void HandleKeyEvent(QKeyEvent* event, bool pressed);
     void HandleMouseEvent(QMouseEvent* event, bool pressed);
     void HandleMouseMotion(QMouseEvent* event);
+
+    // Backend-agnostic touch helper for native frontends.
+    void HandleTouchPoint(int x, int y, bool pressed);
     
     // Virtual Controller UI Check
     // Checks if the mouse coordinates fall into a drawn bounding box

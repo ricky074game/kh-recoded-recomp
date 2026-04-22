@@ -116,36 +116,37 @@ void InputManager::HandleKeyEvent(QKeyEvent* event, bool pressed) {
 
 void InputManager::HandleMouseEvent(QMouseEvent* event, bool pressed) {
     if (event->button() == Qt::LeftButton) {
-        SetBit(extkeyin, 6, pressed); // Pen bit
-        
-        if (pressed) {
-            // Update touch X/Y
-            int raw_x = event->position().x() - display_offset_x;
-            int raw_y = event->position().y() - display_offset_y;
-            
-            float unscaled_x = raw_x / scale_factor;
-            float unscaled_y = raw_y / scale_factor;
-            
-            // Clamp to DS screen
-            touch_x = ClampTouchCoordinate(static_cast<int>(unscaled_x), 255);
-            touch_y = ClampTouchCoordinate(static_cast<int>(unscaled_y), 191);
-            CalibrateTouchScreen();
-        }
+        HandleTouchPoint(static_cast<int>(event->position().x()),
+                         static_cast<int>(event->position().y()),
+                         pressed);
     }
 }
 
 void InputManager::HandleMouseMotion(QMouseEvent* event) {
     if (event->buttons() & Qt::LeftButton) {
-        int raw_x = event->position().x() - display_offset_x;
-        int raw_y = event->position().y() - display_offset_y;
-        
-        float unscaled_x = raw_x / scale_factor;
-        float unscaled_y = raw_y / scale_factor;
-        
-        touch_x = ClampTouchCoordinate(static_cast<int>(unscaled_x), 255);
-        touch_y = ClampTouchCoordinate(static_cast<int>(unscaled_y), 191);
-        CalibrateTouchScreen();
+        HandleTouchPoint(static_cast<int>(event->position().x()),
+                         static_cast<int>(event->position().y()),
+                         true);
     }
+}
+
+void InputManager::HandleTouchPoint(int x, int y, bool pressed) {
+    SetBit(extkeyin, 6, pressed); // Pen bit
+
+    if (!pressed) {
+        return;
+    }
+
+    const int raw_x = x - display_offset_x;
+    const int raw_y = y - display_offset_y;
+
+    const float unscaled_x = raw_x / scale_factor;
+    const float unscaled_y = raw_y / scale_factor;
+
+    // Clamp to DS screen.
+    touch_x = ClampTouchCoordinate(static_cast<int>(unscaled_x), 255);
+    touch_y = ClampTouchCoordinate(static_cast<int>(unscaled_y), 191);
+    CalibrateTouchScreen();
 }
 
 

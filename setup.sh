@@ -5,6 +5,64 @@
 
 set -euo pipefail
 
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_with_optional_sudo() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        "$@"
+    elif command_exists sudo; then
+        sudo "$@"
+    else
+        echo "Error: Need root privileges to install missing packages, but sudo is unavailable."
+        return 1
+    fi
+}
+
+ensure_debian_packages() {
+    local -a required_pkgs=(
+        build-essential
+        cmake
+        ninja-build
+        git
+        pkg-config
+        python3
+        gawk
+        coreutils
+        libsdl2-dev
+        libvulkan-dev
+        qt6-base-dev
+        libcapstone-dev
+    )
+
+    local -a missing_pkgs=()
+    local pkg
+    for pkg in "${required_pkgs[@]}"; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            missing_pkgs+=("$pkg")
+        fi
+    done
+
+    if (( ${#missing_pkgs[@]} == 0 )); then
+        return 0
+    fi
+
+    echo "=> Installing missing Debian/Ubuntu dependencies: ${missing_pkgs[*]}"
+    run_with_optional_sudo apt-get update
+    DEBIAN_FRONTEND=noninteractive run_with_optional_sudo apt-get install -y "${missing_pkgs[@]}"
+}
+
+ensure_build_dependencies() {
+    if command_exists apt-get && command_exists dpkg; then
+        ensure_debian_packages
+        return
+    fi
+
+    echo "Warning: Auto-install is only implemented for Debian/Ubuntu (apt + dpkg)."
+    echo "Please install required packages manually: compiler toolchain, CMake, SDL2 dev, Vulkan dev, Qt6 base dev."
+}
+
 usage() {
     cat <<'EOF'
 Usage: ./setup.sh [options] <path_to_nds_rom>
@@ -218,6 +276,8 @@ cmake_configure() {
     
     "${cmd[@]}"
 }
+
+ensure_build_dependencies
 
 for required_cmd in cmake python3 sha256sum awk; do
     if ! command -v "$required_cmd" >/dev/null 2>&1; then
