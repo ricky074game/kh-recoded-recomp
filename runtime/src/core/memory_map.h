@@ -67,9 +67,6 @@ public:
 
     uint8_t vramcnt[9] = {}; // VRAMCNT_A through VRAMCNT_I
 
-    uint16_t keyinput = 0x03FF; // All buttons released (active-low)
-    uint16_t extkeyin = 0x007F; // X, Y, fold, etc.
-
     uint16_t powcnt1 = 0;
 
 private:
