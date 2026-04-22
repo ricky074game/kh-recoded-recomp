@@ -1,4 +1,5 @@
 #include "hw_overlay.h"
+#include "hw_irq.h"
 #include "cpu_context.h"
 #include "memory_map.h"
 #include <fstream>
@@ -117,19 +118,8 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
             break;
         }
 
-        if (ctx->mem != nullptr && (ctx->cpsr & 0x80) == 0) {
-            auto& irq = ctx->mem->irq_arm9;
-            if (irq.ime != 0 && (irq.ie & irq.if_reg) != 0) {
-                ctx->r14_irq = ctx->r[15] + 4;
-                ctx->spsr_irq = ctx->cpsr;
-                ctx->cpsr = (ctx->cpsr & ~0x1F) | 0x12; // Switch to IRQ mode
-                ctx->cpsr |= 0x80; // Disable IRQs
-                if (ctx->cp15_control & 0x2000) {
-                    ctx->r[15] = 0xFFFF0018;
-                } else {
-                    ctx->r[15] = 0x00000018;
-                }
-            }
+        if (ctx->mem != nullptr) {
+            CheckInterrupts(ctx, ctx->mem->irq_arm9, 4, true);
         }
 
         // Clear THUMB bit (bit 0) if present
