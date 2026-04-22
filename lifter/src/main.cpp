@@ -58,6 +58,23 @@ int main(int argc, char* argv[]) {
         decoder.AnalyzeControlFlow(0x0203A85B);
         // Another early Thumb target reached through sparse dynamic stubs.
         decoder.AnalyzeControlFlow(0x0202ABA9);
+        // Probe logs show repeated dispatch to 0x020235B2 (Thumb) from a
+        // sparse fallthrough island; seed it explicitly to avoid unmapped
+        // churn when this helper path is reached.
+        decoder.AnalyzeControlFlow(0x020235B3);
+        // Boot progression via the 0x020254E8@D90 shim reaches a second
+        // sparse Thumb hole at 0x0201066A; seed it so the epilogue path is
+        // materialized instead of looping on unmapped recovery.
+        decoder.AnalyzeControlFlow(0x0201066B);
+        // Current boot loop repeatedly lands in sparse Thumb islands around
+        // 0x020254B8 and 0x02029Exx/0x02029Fxx; seed the exact targets to
+        // reduce dispatcher gap-recovery churn.
+        decoder.AnalyzeControlFlow(0x020254B9);
+        decoder.AnalyzeControlFlow(0x02029EED);
+        decoder.AnalyzeControlFlow(0x02029F4D);
+        decoder.AnalyzeControlFlow(0x02029F71);
+        // Frequently reached ARM helper target in the same loop cluster.
+        decoder.AnalyzeControlFlow(0x0204D9E4);
     }
 
     const auto& instructions = decoder.GetDecodedInstructions();

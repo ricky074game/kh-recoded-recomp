@@ -53,6 +53,9 @@ public:
 
     DMAChannel() = default;
 
+    // Executes DMA via the full memory map (IO, VRAM, palette, WRAM, etc.).
+    void Execute(NDSMemory* mem);
+
     // Decodes the raw 32-bit control register write (DMACNT combined).
     void WriteControl(uint32_t value) {
         word_count  = value & 0x1FFFFF; // Bits 0-20 (ARM9 can do 21 bits)

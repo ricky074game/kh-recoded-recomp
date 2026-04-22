@@ -1,179 +1,199 @@
-# Kingdom Hearts Re:coded — Static Recompilation
+# Kingdom Hearts Re:coded Static Recompilation
 
-A clean-room static recompilation of *Kingdom Hearts Re:coded* (Nintendo DS) into native C++ targeting modern PC hardware (Vulkan, SDL2, Miniaudio).
+This project recompiles Nintendo DS game code from Kingdom Hearts Re:coded into native C++ and runs it through a custom runtime.
 
-## Architecture
+It is split into three core components:
+- lifter: translates ARM binaries into C++ source files
+- runtime: emulates DS hardware behavior and executes lifted code
+- mod_api: static modding interface used by runtime-side hooks
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Build Pipeline                           │
-│  User provides .nds → ndstool extracts → Lifter generates C++   │
-│  → Compiler builds native .exe                                  │
-└──────────────┬──────────────────────────────────────┬────────────┘
-               │                                      │
-      ┌────────▼────────┐                    ┌────────▼────────┐
-      │     Lifter       │                    │    Runtime       │
-      │ (Offline Tool)   │                    │ (Execution Eng.) │
-      │                  │                    │                  │
-      │ • Capstone ARM   │       emits        │ • NDSMemory      │
-      │ • Control Flow   │───────C++──────────│ • CPU_Context    │
-      │ • C++ Emitter    │                    │ • HW Subsystems  │
-      │ • Flag Deferral  │                    │ • VFS            │
-      └──────────────────┘                    │ • ARM9/7 Threads │
-                                              │ • Timing/IRQ     │
-                                              └────────┬─────────┘
-                                                       │
-                                              ┌────────▼─────────┐
-                                              │     Mod API       │
-                                              │ • HookRegistry    │
-                                              │ • Pre/Post Hooks  │
-                                              │ • DLL/SO Loading  │
-                                              └──────────────────┘
-```
+## Legal and Scope
 
-## Project Structure
+- This repository does not include proprietary game assets.
+- You must use your own legally dumped ROM.
+- Generated code and extracted assets are produced locally on your machine.
 
-| Directory   | Purpose                                                        |
-|-------------|----------------------------------------------------------------|
-| `lifter/`   | Offline ARM→C++ binary translator (Capstone-based)             |
-| `runtime/`  | Native execution engine ("Virtual DS Motherboard")             |
-| `mod_api/`  | C++ hooking API for runtime modification by external mods      |
-| `recoded/`  | Extracted game assets and binaries (user-supplied)             |
-| `tools/`    | Build utilities (ndstool, miniaudio)                          |
+## Quick Start
 
-## Building
+### Linux and macOS
 
-### Required Tools
-
-To build the static recompilation on your local machine, you must have the following tools installed:
-- **CMake** (v3.20 or newer)
-- **C++20 Compiler** (GCC 10+, Clang 12+, or MSVC 2019+)
-- **Python 3** (Optional, for advanced lifter scripts)
-- **Git** (for fetching Capstone and Google Test dependencies)
-- **A legally dumped `.nds` ROM** of *Kingdom Hearts Re:coded*
-
-### Step-by-Step Build Instructions
-
-This project uses an automated build orchestrator to extract your ROM, run the Capstone lifter, and compile the final executable without hosting any proprietary assets.
-
-#### Linux & macOS
-1. Open a terminal and clone the repository.
-2. Place your legally dumped ROM in the project root (e.g., `recoded.nds`).
-3. Run the setup script:
-   ```bash
-   chmod +x ./setup.sh && ./setup.sh recoded.nds
-   ```
-   Optional debug build:
-   ```bash
-   ./setup.sh -d recoded.nds
-   ```
-4. The script will output the compiled executable in the `build/` directory.
-
-#### Windows
-1. Open PowerShell or Command Prompt and clone the repository.
-2. Place your legally dumped ROM in the project root (e.g., `recoded.nds`).
-3. Run the setup batch script:
-   ```cmd
-   setup.bat recoded.nds
-   ```
-4. The script will output the compiled executable in the `build/` directory.
-
-### Manual Build Commands
-
-If you prefer to build the project manually after extracting the ROM:
+1. Put your ROM in the repository root, for example recoded.nds.
+2. Run:
 
 ```bash
-# Configure + build all targets
-cmake -S . -B build && cmake --build build -j"$(nproc)"
-
-# Runtime tests
-./build/runtime/runtime_tests --gtest_color=no
-
-# Lifter tests
-cmake -S lifter -B build_lifter && cmake --build build_lifter -j"$(nproc)" && ctest --test-dir build_lifter --output-on-failure
+chmod +x ./setup.sh
+./setup.sh recoded.nds
 ```
 
-### Build Targets
+Debug build:
 
-| Target            | Description                              |
-|-------------------|------------------------------------------|
-| `runtime_engine`  | Main runtime target (outputs `recoded`) |
-| `runtime_tests`   | Google Test suite for the runtime        |
-| `lifter_engine`   | Offline ARM→C++ translator CLI tool      |
-| `lifter_tests`    | Google Test suite for the lifter         |
-| `mod_api`         | Static library for mod hooking           |
+```bash
+./setup.sh -d recoded.nds
+```
+
+Final executable:
+
+- build/runtime/recoded
+
+### Windows
+
+1. Put your ROM in the repository root, for example recoded.nds.
+2. Run:
+
+```bat
+setup.bat recoded.nds
+```
+
+Final executable:
+
+- build\runtime\recoded.exe (or equivalent generator output)
+
+## How It Works
+
+This is the full pipeline used by setup.sh.
+
+### 1) Validate and prepare input
+
+- The script checks required tools (cmake, python3, sha256sum, awk).
+- It validates the ROM checksum against a known US dump hash.
+- If the ROM is split into parts (for example recoded.nds.partaa, partab, ...), it recombines them.
+
+### 2) Build the lifter
+
+- The lifter binary is built in build_lifter as lifter_engine.
+- If source inputs have not changed and cache is valid, this step is skipped.
+
+### 3) Extract ROM contents
+
+- ndstool extracts key files into recoded/:
+  - recoded/arm9.bin
+  - recoded/y9.bin
+  - recoded/overlay/
+  - recoded/data/
+- Extraction is cached by ROM hash in recoded/.extract_stamp.
+
+### 4) Lift ARM binaries to C++
+
+- arm9.bin is lifted first.
+- Overlays listed in y9.bin are parsed and lifted in parallel.
+- Output goes to runtime/src/generated.
+- Lifting is cached using ROM hash plus lifter binary hash in runtime/src/generated/.lift_stamp.
+
+### 5) Generate registration glue
+
+- setup.sh emits runtime/src/generated/master_registration.cpp.
+- That file wires all lifted registration functions into RegisterAllLiftedFunctions.
+- Runtime uses this to map runtime addresses to generated handlers.
+
+### 6) Build runtime executable
+
+- CMake configures the root project in build/.
+- Target runtime_engine is built and output as recoded.
+
+## Runtime Execution Model
+
+At runtime, the engine follows this flow:
+
+1. Initialize virtual DS state (memory map, hardware blocks, CPU contexts).
+2. Load arm9.bin into emulated main RAM.
+3. Load overlay metadata from y9.bin.
+4. Start ARM9 and ARM7 execution threads.
+5. Dispatch translated code by address through the overlay manager and generated registry.
+6. Route memory-mapped IO reads and writes to emulated hardware modules (IRQ, timers, DMA, GX, 2D engine, audio, input, save).
+7. Drive frame timing with a VBlank timing thread.
+
+## Build and Test Commands
+
+### Build all targets
+
+```bash
+cmake -S . -B build
+cmake --build build -j"$(nproc)"
+```
+
+### Runtime tests
+
+```bash
+./build/runtime/runtime_tests --gtest_color=no
+```
+
+### Lifter tests
+
+```bash
+cmake -S lifter -B build_lifter
+cmake --build build_lifter -j"$(nproc)"
+ctest --test-dir build_lifter --output-on-failure
+```
 
 ## Running
 
+Default extracted data path:
+
 ```bash
-# Run the runtime engine (default data dir: recoded/data)
-./build/runtime/recoded
-
-# Or specify a custom data directory
-./build/runtime/recoded /path/to/extracted/data
-
-# Run the lifter on an ARM9 binary
-./build/lifter/lifter_engine recoded/arm9.bin output.cpp 0x02000000
+./build/runtime/recoded recoded/data
 ```
 
-### Runtime Debugging (Black Screen / Stalls)
+You can also pass a custom data directory:
 
-If the game window opens but appears stuck, run the runtime with the watchdog enabled:
+```bash
+./build/runtime/recoded /path/to/extracted/data
+```
+
+## Debugging
+
+Watchdog mode is useful for startup stalls:
 
 ```bash
 KH_DEBUG_WATCHDOG=1 KH_DEBUG_WATCHDOG_POLL_MS=300 ./build/runtime/recoded recoded/data
 ```
 
-By default, this does **not** spam per-instruction trace lines.
+Useful environment variables:
+- KH_DEBUG_WATCHDOG
+- KH_DEBUG_WATCHDOG_POLL_MS
+- KH_DEBUG_WATCHDOG_STALL_MS
+- KH_DEBUG_HEARTBEAT_MS
+- KH_DEBUG_SAME_DISPATCH_WARN
 
-If you explicitly want instruction spam, add the extra runtime argument `superdebug`:
+Optional instruction spam mode:
 
 ```bash
-KH_DEBUG_WATCHDOG=1 ./build/runtime/recoded recoded/data superdebug
+./build/runtime/recoded recoded/data superdebug
 ```
 
-Press `F1` in the runtime window to print a manual debug snapshot.
+## setup.sh Options
 
-Useful watchdog env vars:
-- `KH_DEBUG_WATCHDOG=1`: enable watchdog thread logs.
-- `KH_DEBUG_WATCHDOG_POLL_MS=300`: polling period for progress checks.
-- `KH_DEBUG_WATCHDOG_STALL_MS=3000`: report if ARM9 dispatch has no progress for this duration.
-- `KH_DEBUG_HEARTBEAT_MS=0`: periodic runtime status snapshot interval (0 disables heartbeat, default).
-- `KH_DEBUG_SAME_DISPATCH_WARN=10000`: warn when ARM9 repeatedly dispatches the same address.
-- `KH_SUPERDEBUG=1`: environment fallback to force instruction spam (same as passing `superdebug`).
+```text
+-d, --debug             Debug build with EXTREME_DEBUG enabled
+-j, --jobs N            Compile parallelism
+--lift-jobs N           Overlay lifting parallelism
+--skip-lifter-build     Reuse existing lifter binary
+--force-extract         Ignore extract cache and re-extract
+--force-lift            Ignore lift cache and re-lift
+```
 
-What to look for in logs:
-- `sameDispatch` rapidly increasing at one `lastDispatch` address indicates a tight loop.
-- `gxSwaps=0` and `submit2D=0` indicate rendering command submission has not started yet.
-- Growing `vblank` with no render submits indicates timing is alive but game bootstrap is likely stuck.
+## Repository Layout
 
-## Hardware Emulation Status
+- lifter/: offline ARM-to-C++ translation tool
+- runtime/: execution runtime and hardware emulation
+- mod_api/: hook and mod loading API
+- recoded/: extracted local ROM content (not source-controlled)
+- tools/: helper tools and bundled dependencies
 
-| Subsystem          | Status       | Notes                                     |
-|--------------------|--------------|-------------------------------------------|
-| VFS (File System)  | ✅ Complete  | FAT/FNT parsing, file-by-ID/path loading  |
-| Memory Map         | ✅ Complete  | Main RAM, WRAM, ITCM, DTCM, VRAM, OAM    |
-| CPU Context        | ✅ Complete  | Full register file, mode switching, CP15  |
-| IPC (FIFO/Sync)    | ✅ Complete  | Lock-free SPSC queue, IPCSYNC register    |
-| DMA Controller     | ✅ Complete  | 4 channels, addr control, memcpy transfer |
-| Math Engine        | ✅ Complete  | Div32/64, Sqrt32/64, div-by-zero behavior |
-| Hardware Timers    | ✅ Complete  | 4 channels, prescaler, chrono-based       |
-| RTC                | ✅ Complete  | BCD encoding, SPI protocol state machine  |
-| IRQ Controller     | ✅ Complete  | IME/IE/IF, VBlank, all IRQ sources        |
-| Binary Lifter      | ✅ Complete  | ARM/Thumb decode, 25+ instruction emitters|
-| 3D Geometry Engine | 🔲 Phase 5  | Fixed-function GPU intercept              |
-| 2D Engine (OAM/BG) | 🔲 Phase 6  | Sprite/tile rendering                     |
-| Save Data (SPI)    | 🔲 Phase 7  | EEPROM/Flash emulation                   |
-| Overlays           | 🔲 Phase 8  | Dynamic code swapping                    |
+## Current Status
 
-## Development Conventions
+Implemented and actively used:
+- memory map and CPU context
+- IRQ, timers, DMA, IPC, math engine
+- VFS and overlay loading
+- 2D and 3D rendering pipeline integration paths
+- SDL input/audio plumbing
 
-1. **TDD First**: Every hardware feature must have ≥3 tests before implementation.
-2. **Memory Safety**: All game memory access goes through `NDSMemory::Read/Write` wrappers.
-3. **No Raw Pointers**: The lifter resolves literal pools statically; no runtime pointer chasing.
-4. **Clean Room**: No proprietary ROM data in logic directories. VFS loads from user's local disk.
-5. **GBATEK Compliance**: All hardware emulation matches GBATEK specifications exactly.
+Still evolving:
+- full compatibility and edge-case behavior
+- boot and gameplay correctness across all content paths
+- performance tuning and regression hardening
 
 ## License
 
-This project contains no proprietary code or assets. The lifter, runtime wrappers, and mod API are original work. Users must supply their own legally-dumped `.nds` ROM.
+Project source code in this repository is original work under the repository license.
+Game content remains owned by its respective rights holders and is not distributed here.

@@ -201,8 +201,7 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
                 dma_arm9[channel].WriteControl(value);
                 if (dma_arm9[channel].enabled &&
                     dma_arm9[channel].timing == DMAStartTiming::Immediate) {
-                    dma_arm9[channel].Execute(main_ram.data(),
-                                              static_cast<uint32_t>(main_ram.size()));
+                    dma_arm9[channel].Execute(this);
                     if (dma_arm9[channel].irq_on_end) {
                         irq_arm9.RaiseIRQ(IRQBits::DMA0 << channel);
                     }
@@ -224,7 +223,7 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
                 dma_arm7[channel].WriteControl(value);
                 if (dma_arm7[channel].enabled &&
                     dma_arm7[channel].timing == DMAStartTiming::Immediate) {
-                    dma_arm7[channel].trigger();
+                    dma_arm7[channel].Execute(this);
                 }
             }
         }

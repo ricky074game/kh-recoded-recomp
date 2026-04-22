@@ -17,6 +17,7 @@
 // ============================================================================
 
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <array>
 #include <vector>
@@ -240,7 +241,13 @@ public:
     virtual void SubmitFrame2D(const std::vector<Sprite2D>& sprites,
                                const std::array<BGLayer2D, 4>& bg_layers,
                                const BlendControl& blend,
-                               const WindowControl& windows) = 0;
+                               const WindowControl& windows,
+                               const uint8_t* vram_data,
+                               size_t vram_size,
+                               const uint8_t* palette_data,
+                               size_t palette_size,
+                               bool render_to_top,
+                               uint32_t dispcnt) = 0;
 };
 
 // ============================================================================
@@ -269,6 +276,7 @@ public:
 
     // ---- Rendering Backend ----
     Renderer2D* renderer = nullptr;
+    bool is_sub_engine = false;
 
     NDS2DEngine();
 
@@ -281,7 +289,13 @@ public:
     void ParseOAM(const uint8_t* oam_data, std::vector<Sprite2D>& out_sprites) const;
 
     // ---- Per-Frame Submission ----
-    void SubmitFrame(const uint8_t* oam_data);
+    void SubmitFrame(const uint8_t* oam_data,
+                     const uint8_t* vram_data,
+                     size_t vram_size,
+                     const uint8_t* palette_data,
+                     size_t palette_size);
+
+    void SetSubEngine(bool is_sub) { is_sub_engine = is_sub; }
 
     // ---- Decoded State Queries ----
     uint8_t GetBGMode() const { return dispcnt & 0x7; }

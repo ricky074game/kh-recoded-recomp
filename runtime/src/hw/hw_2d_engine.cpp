@@ -444,7 +444,11 @@ void NDS2DEngine::ParseOAM(const uint8_t* oam_data,
     }
 }
 
-void NDS2DEngine::SubmitFrame(const uint8_t* oam_data) {
+void NDS2DEngine::SubmitFrame(const uint8_t* oam_data,
+                              const uint8_t* vram_data,
+                              size_t vram_size,
+                              const uint8_t* palette_data,
+                              size_t palette_size) {
     if (!renderer) return;
 
     // Phase 4: Hardware evaluation before rasterization submission
@@ -459,7 +463,16 @@ void NDS2DEngine::SubmitFrame(const uint8_t* oam_data) {
     ParseOAM(oam_data, sprites);
     g_debug_2d_last_sprite_count.store(static_cast<uint32_t>(sprites.size()), std::memory_order_relaxed);
     g_debug_2d_submit_count.fetch_add(1, std::memory_order_relaxed);
-    renderer->SubmitFrame2D(sprites, bg_layers, blend, windows);
+    renderer->SubmitFrame2D(sprites,
+                            bg_layers,
+                            blend,
+                            windows,
+                            vram_data,
+                            vram_size,
+                            palette_data,
+                            palette_size,
+                            !is_sub_engine,
+                            dispcnt);
 }
 
 

@@ -114,7 +114,10 @@ public:
     uint8_t* GetMainRAM() { return main_ram.data(); }
     size_t   GetMainRAMSize() const { return main_ram.size(); }
     uint8_t* GetVRAM() { return vram.data(); }
+    size_t   GetVRAMSize() const { return vram.size(); }
     uint8_t* GetOAM()  { return oam.data(); }
+    uint8_t* GetPaletteRAM() { return palette_ram.data(); }
+    size_t   GetPaletteRAMSize() const { return palette_ram.size(); }
     GXEngine& GetGXEngine() { return gx_engine; }
     NDS2DEngine& GetEngine2DA() { return engine2d_a; }
     NDS2DEngine& GetEngine2DB() { return engine2d_b; }
