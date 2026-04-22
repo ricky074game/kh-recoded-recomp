@@ -56,9 +56,6 @@ uint32_t NDSMemory::HandleHardwareRead(uint32_t address) {
         return engine2d_b.ReadRegister(address - 0x04001000);
     }
 
-    if (address == 0x04000130) return keyinput;
-    if (address == 0x04000136) return extkeyin;
-
     if (address == 0x04000180) return ipc_sync_arm9.Read();
 
     if (address == 0x040001A0) return save_chip.ReadSPICNT();
