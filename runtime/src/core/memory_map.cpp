@@ -25,6 +25,21 @@ constexpr uint32_t kVRAMMirrorStart = 0x06000000;
 constexpr uint32_t kVRAMMirrorEndExclusive = 0x07000000;
 constexpr uint32_t kTransientOpenBusStart = 0x07000800;
 
+uint32_t UpdateRegisterLane(uint32_t original,
+                            uint32_t address,
+                            uint32_t register_base,
+                            uint32_t value,
+                            uint8_t write_size) {
+    const uint32_t lane_shift = (address - register_base) * 8u;
+    uint32_t mask = 0xFFFFFFFFu;
+    if (write_size == 1) {
+        mask = 0xFFu << lane_shift;
+        value = (value & 0xFFu) << lane_shift;
+    } else if (write_size == 2) {
+        mask = 0xFFFFu << lane_shift;
+        value = (value & 0xFFFFu) << lane_shift;
+    }
+    return (original & ~mask) | (value & mask);
 bool IsHWProbeDebugEnabled() {
     static const bool enabled = []() {
         const char* env = std::getenv("KH_DEBUG_HW_PROBES");
@@ -117,12 +132,13 @@ uint32_t NDSMemory::HandleHardwareRead(uint32_t address) {
     if (address == 0x040002BC) return static_cast<uint32_t>((math_engine.sqrt_param >> 32) & 0xFFFFFFFF);
 
     if (address >= 0x040000B0 && address <= 0x040000DF) {
-        int channel = (address - 0x040000B0) / 12;
-        int reg     = (address - 0x040000B0) % 12;
+        const uint32_t offset = address - 0x040000B0;
+        const int channel = static_cast<int>(offset / 12u);
+        const uint32_t reg = offset % 12u;
         if (channel < 4) {
-            if (reg == 0) return dma_arm9[channel].src_addr;
-            if (reg == 4) return dma_arm9[channel].dst_addr;
-            if (reg == 8) return dma_arm9[channel].enabled ? 0x80000000 : 0;
+            if (reg < 4u) return dma_arm9_src_raw[channel] >> (reg * 8u);
+            if (reg < 8u) return dma_arm9_dst_raw[channel] >> ((reg - 4u) * 8u);
+            return dma_arm9_ctrl_raw[channel] >> ((reg - 8u) * 8u);
         }
     }
 
@@ -135,8 +151,7 @@ uint32_t NDSMemory::HandleHardwareRead(uint32_t address) {
     return 0; // Unhandled read returns 0
 }
 
-void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
-    const bool debug_hw_probes = IsHWProbeDebugEnabled();
+void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value, uint8_t write_size) {
 
     static bool seen_dispcnt_a_write = false;
     static bool seen_dispcnt_b_write = false;
@@ -200,15 +215,24 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
     }
 
     if (address >= 0x040000B0 && address <= 0x040000DF) {
-        int channel = (address - 0x040000B0) / 12;
-        int reg     = (address - 0x040000B0) % 12;
+        const uint32_t offset = address - 0x040000B0;
+        const int channel = static_cast<int>(offset / 12u);
+        const uint32_t reg = offset % 12u;
+        const uint32_t channel_base = 0x040000B0u + static_cast<uint32_t>(channel) * 12u;
+
         if (channel < 4) {
-            if (reg == 0) {
-                dma_arm9[channel].src_addr = value;
-            } else if (reg == 4) {
-                dma_arm9[channel].dst_addr = value;
-            } else if (reg == 8) {
-                dma_arm9[channel].WriteControl(value);
+            if (reg < 4u) {
+                dma_arm9_src_raw[channel] =
+                    UpdateRegisterLane(dma_arm9_src_raw[channel], address, channel_base, value, write_size);
+                dma_arm9[channel].src_addr = dma_arm9_src_raw[channel];
+            } else if (reg < 8u) {
+                dma_arm9_dst_raw[channel] = UpdateRegisterLane(
+                    dma_arm9_dst_raw[channel], address, channel_base + 4u, value, write_size);
+                dma_arm9[channel].dst_addr = dma_arm9_dst_raw[channel];
+            } else {
+                dma_arm9_ctrl_raw[channel] = UpdateRegisterLane(
+                    dma_arm9_ctrl_raw[channel], address, channel_base + 8u, value, write_size);
+                dma_arm9[channel].WriteControl(dma_arm9_ctrl_raw[channel]);
                 if (dma_arm9[channel].enabled &&
                     dma_arm9[channel].timing == DMAStartTiming::Immediate) {
                     dma_arm9[channel].Execute(this);
@@ -419,7 +443,7 @@ void NDSMemory::Write8(uint32_t address, uint8_t value) {
         oam[address - 0x07000000] = value; return;
     }
     if (address >= 0x04000000 && address <= 0x04FFFFFF) {
-        HandleHardwareWrite(address, value); return;
+        HandleHardwareWrite(address, value, 1); return;
     }
 
     if (address >= kTransientOpenBusStart) {
@@ -537,7 +561,7 @@ void NDSMemory::Write16(uint32_t address, uint16_t value) {
         oam[off] = value & 0xFF; oam[off + 1] = (value >> 8) & 0xFF; return;
     }
     if (address >= 0x04000000 && address <= 0x04FFFFFF) {
-        HandleHardwareWrite(address, value); return;
+        HandleHardwareWrite(address, value, 2); return;
     }
 
     if (address >= kTransientOpenBusStart) {
@@ -713,7 +737,7 @@ void NDSMemory::Write32(uint32_t address, uint32_t value) {
         return;
     }
     if (address >= 0x04000000 && address <= 0x04FFFFFF) {
-        HandleHardwareWrite(address, value);
+        HandleHardwareWrite(address, value, 4);
         return;
     }
 
