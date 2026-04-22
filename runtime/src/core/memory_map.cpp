@@ -34,6 +34,8 @@ NDSMemory::NDSMemory() {
     vram.resize(656 * 1024, 0);             // 656KB VRAM
     oam.resize(2 * 1024, 0);               // 2KB OAM
 
+    engine2d_b.SetSubEngine(true);
+
     InitIPC(&irq_arm9, &irq_arm7);
 
     RegisterAllLiftedFunctions(this);

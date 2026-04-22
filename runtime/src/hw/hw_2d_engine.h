@@ -242,12 +242,7 @@ public:
                                const std::array<BGLayer2D, 4>& bg_layers,
                                const BlendControl& blend,
                                const WindowControl& windows,
-                               const uint8_t* vram_data,
-                               size_t vram_size,
-                               const uint8_t* palette_data,
-                               size_t palette_size,
-                               bool render_to_top,
-                               uint32_t dispcnt) = 0;
+                               bool render_to_top) = 0;
 };
 
 // ============================================================================

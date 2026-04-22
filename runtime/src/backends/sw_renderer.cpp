@@ -165,16 +165,15 @@ void SoftwareRenderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
                                  const std::array<BGLayer2D, 4>& bg_layers,
                                  const BlendControl& blend,
                                  const WindowControl& windows,
-                                 const uint8_t* vram_data,
-                                 size_t vram_size,
-                                 const uint8_t* palette_data,
-                                 size_t palette_size,
-                                 bool render_to_top,
-                                 uint32_t dispcnt) {
+                                 bool render_to_top) {
     std::lock_guard<std::mutex> lock(m_render_mutex);
-    
-    // Clear bottom screen to transparent/black
-    for (int i = 0; i < 256 * 192; ++i) m_pixels_bottom[i] = 0x000000FF;
+
+    uint32_t* target_pixels = render_to_top ? m_pixels_top : m_pixels_bottom;
+    for (int i = 0; i < 256 * 192; ++i) target_pixels[i] = 0x000000FF;
+
+    (void)bg_layers;
+    (void)blend;
+    (void)windows;
 
     // Render BG and OBJ by priority (3 = lowest, 0 = highest).
     for (int p = 3; p >= 0; --p) {
@@ -214,7 +213,7 @@ void SoftwareRenderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
                     if (!tile_on) continue;
 
                     const uint32_t src = PackRGBA((i * 60) + 80, px_x & 0xFF, px_y & 0xFF, 0xFF);
-                    uint32_t& dst = m_pixels_bottom[y * 256 + x];
+                    uint32_t& dst = target_pixels[y * 256 + x];
                     dst = BlendPixel(dst, src, blend, effects_enabled);
                 }
 
@@ -266,7 +265,7 @@ void SoftwareRenderer::SubmitFrame2D(const std::vector<Sprite2D>& sprites,
                         ((sprite.tile_index * 13) + src_x * 5) & 0xFF,
                         ((sprite.tile_index * 7) + src_y * 9) & 0xFF,
                         0xFF);
-                    uint32_t& dst = m_pixels_bottom[ty * 256 + tx];
+                    uint32_t& dst = target_pixels[ty * 256 + tx];
                     dst = BlendPixel(dst, src, blend, effects_enabled);
                 }
             }

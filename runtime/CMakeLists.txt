@@ -9,43 +9,24 @@ if(NOT MSVC)
     set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")
 endif()
 
-find_package(SDL2 REQUIRED)
+include(FetchContent)
+
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
 
-set(SDL2_LINK_TARGETS)
-set(SDL2_INCLUDE_PATHS)
-if(TARGET SDL2::SDL2)
-    list(APPEND SDL2_LINK_TARGETS SDL2::SDL2)
-    if(TARGET SDL2::SDL2main)
-        list(APPEND SDL2_LINK_TARGETS SDL2::SDL2main)
-    endif()
-elseif(DEFINED SDL2_LIBRARIES)
-    list(APPEND SDL2_LINK_TARGETS ${SDL2_LIBRARIES})
-endif()
-if(DEFINED SDL2_INCLUDE_DIRS)
-    list(APPEND SDL2_INCLUDE_PATHS ${SDL2_INCLUDE_DIRS})
-endif()
+# Fetch Capstone disassembler
+FetchContent_Declare(
+  capstone
+  GIT_REPOSITORY https://github.com/capstone-engine/capstone.git
+  GIT_TAG 5.0.1
+)
+set(CAPSTONE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_BUILD_CSTOOL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(capstone)
 
-set(CAPSTONE_LINK_TARGETS)
+set(CAPSTONE_LINK_TARGETS capstone)
 set(CAPSTONE_INCLUDE_PATHS)
-if(TARGET capstone)
-    list(APPEND CAPSTONE_LINK_TARGETS capstone)
-elseif(TARGET capstone-static)
-    list(APPEND CAPSTONE_LINK_TARGETS capstone-static)
-elseif(TARGET capstone::capstone)
-    list(APPEND CAPSTONE_LINK_TARGETS capstone::capstone)
-else()
-    find_package(capstone CONFIG QUIET)
-    if(TARGET capstone::capstone)
-        list(APPEND CAPSTONE_LINK_TARGETS capstone::capstone)
-    else()
-        find_package(PkgConfig REQUIRED)
-        pkg_check_modules(CAPSTONE REQUIRED capstone)
-        list(APPEND CAPSTONE_LINK_TARGETS ${CAPSTONE_LIBRARIES})
-        list(APPEND CAPSTONE_INCLUDE_PATHS ${CAPSTONE_INCLUDE_DIRS})
-    endif()
-endif()
 
 if(NOT TARGET GTest::gtest_main)
     include(FetchContent)
@@ -90,11 +71,11 @@ target_include_directories(runtime_core
         src/generated
         ../lifter/src
         ../tools/miniaudio
-        ${SDL2_INCLUDE_PATHS}
         ${CAPSTONE_INCLUDE_PATHS})
 target_link_libraries(runtime_core
     PRIVATE
-        ${SDL2_LINK_TARGETS}
+        Qt6::Core
+        Qt6::Gui
         ${CAPSTONE_LINK_TARGETS}
         Threads::Threads
         Vulkan::Vulkan
@@ -115,13 +96,15 @@ target_include_directories(runtime_engine
         src/generated
         ../lifter/src
         ../tools/miniaudio
-        ${SDL2_INCLUDE_PATHS})
+        )
 target_link_libraries(runtime_engine
     PRIVATE
         runtime_core
         lifter_core
         ${CAPSTONE_LINK_TARGETS}
-        ${SDL2_LINK_TARGETS}
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Widgets
         Threads::Threads
         Vulkan::Vulkan
         ${PLATFORM_LIBS})
@@ -168,7 +151,6 @@ if(TEST_SOURCES)
             ../lifter/src
             ../tools/miniaudio
             ../mod_api/include
-            ${SDL2_INCLUDE_PATHS}
             ${CAPSTONE_INCLUDE_PATHS})
     target_link_libraries(runtime_tests
         PRIVATE
@@ -177,7 +159,9 @@ if(TEST_SOURCES)
             mod_api
             ${CAPSTONE_LINK_TARGETS}
             GTest::gtest_main
-            ${SDL2_LINK_TARGETS}
+            Qt6::Core
+            Qt6::Gui
+            Qt6::Widgets
             Threads::Threads
             Vulkan::Vulkan
             ${PLATFORM_LIBS})

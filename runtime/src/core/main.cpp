@@ -23,11 +23,15 @@
 #include <QTimer>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QTreeWidget>
 #include <QImage>
 #include <QPixmap>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QMessageBox>
 
 #include "memory_map.h"
 #include "cpu_context.h"
@@ -178,6 +182,73 @@ public:
     }
 };
 
+class KeyboardSettingsDialog : public QDialog {
+public:
+    explicit KeyboardSettingsDialog(QWidget* parent = nullptr) : QDialog(parent) {
+        setWindowTitle("Keyboard Settings");
+
+        auto* layout = new QVBoxLayout(this);
+        auto* table = new QTableWidget(12, 2, this);
+        table->setHorizontalHeaderLabels({"Action", "Binding"});
+        table->verticalHeader()->setVisible(false);
+        table->horizontalHeader()->setStretchLastSection(true);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+        const std::pair<const char*, const char*> bindings[] = {
+            {"A", "Space"},
+            {"B", "Z"},
+            {"Select", "Shift"},
+            {"Start", "Enter"},
+            {"Right", "Right Arrow"},
+            {"Left", "Left Arrow"},
+            {"Up", "Up Arrow"},
+            {"Down", "Down Arrow"},
+            {"R", "S"},
+            {"L", "A"},
+            {"X", "X"},
+            {"Y", "C"},
+        };
+
+        for (int row = 0; row < 12; ++row) {
+            table->setItem(row, 0, new QTableWidgetItem(bindings[row].first));
+            table->setItem(row, 1, new QTableWidgetItem(bindings[row].second));
+        }
+
+        layout->addWidget(table);
+
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        layout->addWidget(buttons);
+        resize(360, 360);
+    }
+};
+
+class ModManagerDialog : public QDialog {
+public:
+    explicit ModManagerDialog(QWidget* parent = nullptr) : QDialog(parent) {
+        setWindowTitle("Mod Manager");
+
+        auto* layout = new QVBoxLayout(this);
+        auto* tree = new QTreeWidget(this);
+        tree->setColumnCount(3);
+        tree->setHeaderLabels({"Mod", "Status", "Dependencies"});
+        tree->header()->setStretchLastSection(true);
+
+        auto* root = new QTreeWidgetItem({"Built-in Assets", "Enabled", "None"});
+        new QTreeWidgetItem(root, {"Runtime overlays", "Enabled", "Base game"});
+        new QTreeWidgetItem(root, {"UI skins", "Disabled", "Base game"});
+        root->setExpanded(true);
+        tree->addTopLevelItem(root);
+
+        layout->addWidget(tree);
+
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        layout->addWidget(buttons);
+        resize(520, 360);
+    }
+};
+
 class MainWindow : public QMainWindow {
 private:
     ScreenWidget* top_screen;
@@ -221,13 +292,15 @@ public:
         connect(exitAction, &QAction::triggered, this, &MainWindow::close);
         
         QMenu* optionsMenu = bar->addMenu("&Options");
-        optionsMenu->addAction("&Keyboard Settings", this, [](){
-            QMessageBox::information(nullptr, "Keyboard Settings", "A: SPACE\nB: Z\nX: X\nY: C\nL: A\nR: S\nSTART: ENTER\nSELECT: SHIFT");
+        optionsMenu->addAction("&Keyboard Settings", this, [this](){
+            KeyboardSettingsDialog dialog(this);
+            dialog.exec();
         });
         
         QMenu* modsMenu = bar->addMenu("&Mods");
-        modsMenu->addAction("&Mod Manager", this, [](){
-            QMessageBox::information(nullptr, "Mod Manager", "Mod Manager is not yet implemented in Qt.");
+        modsMenu->addAction("&Mod Manager", this, [this](){
+            ModManagerDialog dialog(this);
+            dialog.exec();
         });
     }
 

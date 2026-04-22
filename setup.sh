@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # setup.sh - Kingdom Hearts Re:coded Static Recompilation Build Orchestrator
-# This script extracts the ROM, runs the lifter with chunking, and compiles.
+# This script automatically installs dependencies, extracts the ROM, runs the lifter, and compiles.
 
 set -euo pipefail
 
@@ -13,15 +13,118 @@ Options:
   -d, --debug            Build runtime in Debug mode with EXTREME_DEBUG enabled.
   -j, --jobs N           Max parallel compile jobs (default: auto-tuned for CPU/RAM).
       --lift-jobs N      Max parallel overlay-lift jobs (default: min(jobs, 4)).
-    --skip-lifter-build Skip rebuilding lifter_engine when binary already exists.
+  --skip-lifter-build    Skip rebuilding lifter_engine when binary already exists.
       --force-extract    Force ROM extraction even when cache is valid.
       --force-lift       Force binary lifting even when cache is valid.
+      --skip-deps        Skip automatic dependency installation.
   -h, --help             Show this help text.
 
 Environment overrides:
   KH_BUILD_JOBS          Same as --jobs.
   KH_LIFT_JOBS           Same as --lift-jobs.
 EOF
+}
+
+install_dependencies() {
+    echo "==> Detecting OS and installing dependencies..."
+    
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS="$ID"
+    else
+        OS=""
+    fi
+
+    case "$OS" in
+        ubuntu|debian)
+            echo "==> Detected Debian/Ubuntu, installing via apt..."
+            sudo apt-get update || true
+            
+            sudo apt-get install -y \
+                qt6-base-dev \
+                qt6-tools-dev \
+                vulkan-tools \
+                libvulkan-dev \
+                cmake \
+                build-essential \
+                pkg-config \
+                python3 \
+                git
+            
+            if ! sudo apt-get install -y vulkan-validationlayers-dev 2>/dev/null; then
+                echo "Note: vulkan-validationlayers-dev not available, trying vulkan-utility-libraries-dev..."
+                sudo apt-get install -y vulkan-utility-libraries-dev || echo "Note: Vulkan validation layers optional"
+            fi
+            ;;
+        fedora|rhel|centos)
+            echo "==> Detected Fedora/RHEL, installing via dnf..."
+            sudo dnf install -y \
+                qt6-qtbase-devel \
+                qt6-qttools-devel \
+                vulkan-tools \
+                vulkan-devel \
+                vulkan-validationlayers-devel \
+                cmake \
+                gcc-c++ \
+                make \
+                pkg-config \
+                python3 \
+                git
+            ;;
+        arch)
+            echo "==> Detected Arch Linux, installing via pacman..."
+            sudo pacman -Sy --noconfirm \
+                qt6-base \
+                qt6-tools \
+                vulkan-icd-loader \
+                vulkan-headers \
+                vulkan-validation-layers \
+                cmake \
+                base-devel \
+                pkg-config \
+                python \
+                git
+            ;;
+        *)
+            if command -v brew &>/dev/null; then
+                echo "==> Detected macOS with Homebrew, installing dependencies..."
+                brew install qt@6 vulkan-loader vulkan-headers cmake python3 git || true
+            else
+                echo "Could not detect OS or package manager. Please install dependencies manually:"
+                echo "   - Qt6 (qt6-base-dev, qt6-tools-dev)"
+                echo "   - Vulkan SDK"
+                echo "   - CMake 3.20+"
+                echo "   - C++20 compiler (GCC 9+, Clang 10+)"
+                echo "   - Python 3"
+                return 1
+            fi
+            ;;
+    esac
+
+    if ! command -v cmake &>/dev/null; then
+        echo "CMake not found after installation. Please install CMake 3.20+."
+        return 1
+    fi
+
+    if ! pkg-config --exists Qt6Core 2>/dev/null && [[ ! -d /usr/lib/x86_64-linux-gnu/cmake/Qt6 ]] && [[ ! -d /usr/lib/cmake/Qt6 ]] && [[ ! -d /opt/Qt/6* ]]; then
+        echo "Qt6 not found after installation. Please manually install Qt6 or set Qt6_DIR."
+        return 1
+    fi
+
+    local QT6_DIR=""
+    if pkg-config --exists Qt6Core 2>/dev/null; then
+        QT6_DIR=$(pkg-config --variable=exec_prefix Qt6Core)
+        export CMAKE_PREFIX_PATH="${QT6_DIR}/lib/cmake:${CMAKE_PREFIX_PATH:-}"
+        echo "Qt6 found via pkg-config at: $QT6_DIR"
+    elif [[ -d /usr/lib/x86_64-linux-gnu/cmake/Qt6 ]]; then
+        export CMAKE_PREFIX_PATH="/usr/lib/x86_64-linux-gnu/cmake:${CMAKE_PREFIX_PATH:-}"
+        echo "Qt6 found at: /usr/lib/x86_64-linux-gnu/cmake/Qt6"
+    elif [[ -d /usr/lib/cmake/Qt6 ]]; then
+        export CMAKE_PREFIX_PATH="/usr/lib/cmake:${CMAKE_PREFIX_PATH:-}"
+        echo "Qt6 found at: /usr/lib/cmake/Qt6"
+    fi
+
+    echo "Dependencies installed successfully"
 }
 
 is_positive_int() {
@@ -108,6 +211,11 @@ cmake_configure() {
         cmd+=("${CMAKE_GENERATOR_ARGS[@]}")
     fi
     cmd+=("$@")
+    
+    if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+        cmd+=("-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
+    fi
+    
     "${cmd[@]}"
 }
 
@@ -123,6 +231,7 @@ ROM_PATH=""
 FORCE_EXTRACT=0
 FORCE_LIFT=0
 SKIP_LIFTER_BUILD=0
+SKIP_DEPS=0
 BUILD_JOBS="${KH_BUILD_JOBS:-}"
 LIFT_JOBS="${KH_LIFT_JOBS:-}"
 ROOT_CMAKE_FLAGS=()
@@ -165,6 +274,10 @@ while [[ $# -gt 0 ]]; do
             FORCE_LIFT=1
             shift
             ;;
+        --skip-deps)
+            SKIP_DEPS=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -190,6 +303,28 @@ done
 if [[ -z "$ROM_PATH" ]]; then
     usage
     exit 1
+fi
+
+# Install dependencies unless --skip-deps was specified
+if [[ "$SKIP_DEPS" -eq 0 ]]; then
+    install_dependencies
+fi
+
+# Ensure CMAKE_PREFIX_PATH is set for Qt6 (must happen after install_dependencies)
+if [[ -z "${CMAKE_PREFIX_PATH:-}" ]]; then
+    # Try to find Qt6 CMake files in common locations
+    if [[ -d /usr/lib/x86_64-linux-gnu/cmake/Qt6 ]]; then
+        export CMAKE_PREFIX_PATH="/usr/lib/x86_64-linux-gnu/cmake"
+    elif [[ -d /usr/lib/cmake/Qt6 ]]; then
+        export CMAKE_PREFIX_PATH="/usr/lib/cmake"
+    elif pkg-config --exists Qt6Core 2>/dev/null; then
+        QT6_DIR=$(pkg-config --variable=exec_prefix Qt6Core)
+        export CMAKE_PREFIX_PATH="${QT6_DIR}/lib/cmake"
+    fi
+fi
+
+if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+    echo "✓ CMAKE_PREFIX_PATH set to: $CMAKE_PREFIX_PATH"
 fi
 
 if [[ -z "$BUILD_JOBS" ]]; then
