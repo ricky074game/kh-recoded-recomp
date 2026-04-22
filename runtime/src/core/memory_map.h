@@ -67,9 +67,6 @@ public:
 
     uint8_t vramcnt[9] = {}; // VRAMCNT_A through VRAMCNT_I
 
-    uint16_t keyinput = 0x03FF; // All buttons released (active-low)
-    uint16_t extkeyin = 0x007F; // X, Y, fold, etc.
-
     uint16_t powcnt1 = 0;
 
 private:
@@ -102,6 +99,7 @@ private:
 
     uint8_t* ResolveAddress(uint32_t address, uint32_t& offset, uint32_t& max_size);
     const uint8_t* ResolveAddressConst(uint32_t address, uint32_t& offset, uint32_t& max_size) const;
+    bool arm9_vblank_dma_serviced = false;
 
 public:
     NDSMemory();
@@ -132,4 +130,5 @@ public:
     AudioManager& GetAudioManager() { return audio_manager; }
     
     void InvalidateOverlayCache();
+    void StepHardware(int arm9_cycles);
 };

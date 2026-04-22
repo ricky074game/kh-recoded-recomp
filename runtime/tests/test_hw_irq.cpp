@@ -37,7 +37,27 @@ TEST(IRQTest, CheckInterruptsVectorsToIRQMode) {
     EXPECT_EQ(ctx.r14_irq, 0x02000100u);
     EXPECT_EQ(ctx.cpsr & 0x1Fu, ARMMode::IRQ);
     EXPECT_NE(ctx.cpsr & CPSRFlags::I, 0u);
-    EXPECT_EQ(ctx.r[15], 0xFFFF0000u);
+    EXPECT_EQ(ctx.r[15], 0x00000018u);
+}
+
+TEST(IRQTest, CheckInterruptsUsesARM9HighVectorAndLROffsetWhenRequested) {
+    HWIRQ irq;
+    irq.ime = 1;
+    irq.ie = IRQBits::VBlank;
+    irq.RaiseIRQ(IRQBits::VBlank);
+
+    CPU_Context ctx{};
+    ctx.cpsr = ARMMode::SYS; // IRQ enabled (I-bit clear)
+    ctx.cp15_control = 0x2000; // ARM9 V=1 (high vectors)
+    ctx.r[15] = 0x02000100;
+
+    CheckInterrupts(&ctx, irq, 4, true);
+
+    EXPECT_EQ(ctx.spsr_irq, ARMMode::SYS);
+    EXPECT_EQ(ctx.r14_irq, 0x02000104u);
+    EXPECT_EQ(ctx.cpsr & 0x1Fu, ARMMode::IRQ);
+    EXPECT_NE(ctx.cpsr & CPSRFlags::I, 0u);
+    EXPECT_EQ(ctx.r[15], 0xFFFF0018u);
 }
 
 TEST(IRQTest, CheckInterruptsSkipsWhenIBitSet) {

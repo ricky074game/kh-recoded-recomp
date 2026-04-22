@@ -764,6 +764,26 @@ TEST(Phase2_Extra, KEYINPUT_DefaultAllReleased) {
     EXPECT_EQ(keys, 0x03FFu); // All buttons released (active-low)
 }
 
+TEST(Phase2_Extra, KEYINPUT_StartTransitionsVisibleToArm9Polling) {
+    NDSMemory m;
+
+    m.input_manager.UpdateVirtualButton("Start", true);
+    uint32_t keys_pressed = m.Read32(0x04000130);
+    EXPECT_EQ((keys_pressed >> 3) & 1u, 0u); // Start pressed (active-low)
+
+    m.input_manager.UpdateVirtualButton("Start", false);
+    uint32_t keys_released = m.Read32(0x04000130);
+    EXPECT_EQ((keys_released >> 3) & 1u, 1u); // Start released (active-low)
+}
+
+TEST(Phase2_Extra, EXTKEYIN_ReadMirrorsInputManagerState) {
+    NDSMemory m;
+    EXPECT_EQ(m.Read32(0x04000136), static_cast<uint32_t>(m.input_manager.ReadEXTKEYIN()));
+
+    m.input_manager.UpdateVirtualButton("X", true);
+    EXPECT_EQ((m.Read32(0x04000136) >> 0) & 1u, 0u); // X pressed (active-low)
+}
+
 TEST(Phase2_Extra, VRAMCNT_WriteRead) {
     NDSMemory m;
     m.Write32(0x04000240, 0x83); // VRAMCNT_A = enable, MST=3

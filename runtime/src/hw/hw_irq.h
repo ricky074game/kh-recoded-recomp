@@ -83,27 +83,33 @@ public:
 // Checks for pending interrupts and, if triggered, performs the ARM IRQ
 // entry sequence: saves CPSR→SPSR_irq, saves PC→LR_irq, disables IRQs
 // in CPSR (sets I-bit), switches to IRQ mode, and jumps to the vector.
-inline void CheckInterrupts(CPU_Context* ctx, HWIRQ& irq) {
+inline uint32_t ComputeIRQVectorTarget(const CPU_Context* ctx, bool use_cp15_high_vector) {
+    const uint32_t vector_base =
+        (use_cp15_high_vector && (ctx->cp15_control & 0x2000u)) ? 0xFFFF0000u : 0x00000000u;
+    return vector_base + 0x18u;
+}
+
+inline void EnterIRQ(CPU_Context* ctx, uint32_t return_address, bool use_cp15_high_vector) {
+    // 1. Save current CPSR to SPSR_irq
+    ctx->spsr_irq = ctx->cpsr;
+
+    // 2. Save return address to LR_irq
+    ctx->r14_irq = return_address;
+
+    // 3. Switch to IRQ mode with IRQs disabled
+    ctx->cpsr = (ctx->cpsr & ~0x1Fu) | 0x12u; // Mode = IRQ (0x12)
+    ctx->cpsr |= (1u << 7);                    // Set I-bit (disable further IRQs)
+
+    // 4. Jump to IRQ vector
+    ctx->r[15] = ComputeIRQVectorTarget(ctx, use_cp15_high_vector);
+}
+
+inline void CheckInterrupts(CPU_Context* ctx, HWIRQ& irq, uint32_t lr_offset = 0, bool use_cp15_high_vector = false) {
     if (!irq.HasPendingIRQ()) return;
 
     // Don't interrupt if IRQs are already disabled in CPSR
     // (bit 7 = I flag, 1 = disabled)
     if (ctx->cpsr & (1u << 7)) return;
 
-    // ---- ARM IRQ Entry Sequence ----
-    // 1. Save current CPSR to SPSR_irq
-    ctx->spsr_irq = ctx->cpsr;
-
-    // 2. Save return address to LR_irq (PC + 4 for ARM, differs in practice)
-    ctx->r14_irq = ctx->r[15];
-
-    // 3. Switch to IRQ mode with IRQs disabled
-    ctx->cpsr = (ctx->cpsr & ~0x1F) | 0x12; // Mode = IRQ (0x12)
-    ctx->cpsr |= (1u << 7);                  // Set I-bit (disable further IRQs)
-
-    // 4. Jump to IRQ vector
-    // NDS9 uses high vectors (0xFFFF0018) by default when CP15 bit 13 is set.
-    // For simplicity, we use the standard high vector.
-    ctx->r[15] = 0xFFFF0000;
+    EnterIRQ(ctx, ctx->r[15] + lr_offset, use_cp15_high_vector);
 }
-
