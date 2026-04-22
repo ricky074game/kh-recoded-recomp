@@ -1,6 +1,5 @@
 build/
 build_lifter/
-recoded/
 runtime/src/generated/
 *.o
 *.a
