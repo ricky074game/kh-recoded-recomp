@@ -96,6 +96,7 @@ private:
     uint8_t* ResolveAddress(uint32_t address, uint32_t& offset, uint32_t& max_size);
     const uint8_t* ResolveAddressConst(uint32_t address, uint32_t& offset, uint32_t& max_size) const;
     bool arm9_vblank_dma_serviced = false;
+    bool arm9_hblank_dma_serviced = false;
 
 public:
     NDSMemory();

@@ -369,6 +369,36 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
                 }
             }
 
+            if (exec_addr == 0x020254E8 && ctx->r[14] != 0) {
+                const uint32_t lr_exec_addr = ctx->r[14] & ~1u;
+                if (lr_exec_addr == 0x02000D90) {
+                    static bool logged_20254e8_return = false;
+                    if (debug_overlay_probes && !logged_20254e8_return) {
+                        logged_20254e8_return = true;
+                        const uint8_t last_idx = static_cast<uint8_t>(ctx->trace_idx - 1);
+                        const uint32_t last_trace = ctx->trace_buffer[last_idx];
+                        std::cerr << "OverlayManager: Probe 0x020254E8"
+                                  << " lr=0x" << std::hex << ctx->r[14]
+                                  << " sp=0x" << ctx->r[13]
+                                  << " r0=0x" << ctx->r[0]
+                                  << " r4=0x" << ctx->r[4]
+                                  << " r5=0x" << ctx->r[5]
+                                  << " r6=0x" << ctx->r[6]
+                                  << " lastTrace=0x" << last_trace
+                                  << "\n";
+                    }
+
+                    // Mirror the observable front-end status calculation from
+                    // the lifted helper (`lsrs r0, r4, #9`) and treat this
+                    // boot callsite as a normal helper return. The deeper tail
+                    // currently reaches sparse/corrupt state and returns with
+                    // a bad stack-pop PC.
+                    ctx->r[0] = ctx->r[4] >> 9;
+                    ctx->r[15] = lr_exec_addr;
+                    continue;
+                }
+            }
+
             if (exec_addr == 0x0202A448 && ctx->r[14] != 0) {
                 const uint32_t lr_exec_addr = ctx->r[14] & ~1u;
                 if (lr_exec_addr == 0x02000C94) {
@@ -795,6 +825,39 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
             }
         }
 
+        if (debug_overlay_probes &&
+            (exec_addr == 0x0202A1E4 || exec_addr == 0x0202A1F8 || exec_addr == 0x0202A230 ||
+             exec_addr == 0x0202A28E || exec_addr == 0x0202A2A2)) {
+            static std::unordered_set<uint32_t> logged_boot_island;
+            if (logged_boot_island.insert(exec_addr).second) {
+                const uint8_t last_idx = static_cast<uint8_t>(ctx->trace_idx - 1);
+                const uint32_t last_trace = ctx->trace_buffer[last_idx];
+                std::cerr << "OverlayManager: Probe 0x" << std::hex << exec_addr
+                          << " lr=0x" << ctx->r[14]
+                          << " sp=0x" << ctx->r[13]
+                          << " r0=0x" << ctx->r[0]
+                          << " r1=0x" << ctx->r[1]
+                          << " r2=0x" << ctx->r[2]
+                          << " r3=0x" << ctx->r[3]
+                          << " r4=0x" << ctx->r[4]
+                          << " r5=0x" << ctx->r[5]
+                          << " r6=0x" << ctx->r[6]
+                          << " r7=0x" << ctx->r[7]
+                          << " cpsr=0x" << ctx->cpsr
+                          << " lastTrace=0x" << last_trace
+                          << "\n";
+                if (exec_addr == 0x0202A1E4) {
+                    std::cerr << "OverlayManager: bytes@0x0202A1E4:";
+                    for (uint32_t i = 0; i < 32; ++i) {
+                        const uint8_t b = ctx->mem->Read8(0x0202A1E4u + i);
+                        std::cerr << " " << std::hex << std::setw(2) << std::setfill('0')
+                                  << static_cast<uint32_t>(b);
+                    }
+                    std::cerr << std::dec << "\n";
+                }
+            }
+        }
+
         if (exec_addr == 0x021F6180 && ctx->r[14] != 0 && ctx->r[14] != exec_addr) {
             // This helper is currently untranslated; force progress by breaking
             // the repeated HI-conditional branch feedback loop at 0x0203BB30.
@@ -815,6 +878,73 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
             // unliftered and otherwise bounces back into itself via LR.
             ctx->r[15] = 0x0203B4BE;
             continue;
+        }
+
+        if (exec_addr == 0x0202A1E4 && ctx->r[14] != 0) {
+            const uint32_t lr_exec_addr = ctx->r[14] & ~1u;
+            if (lr_exec_addr == 0x02000C5C) {
+                static bool logged_202a1e4_return = false;
+                if (debug_overlay_probes && !logged_202a1e4_return) {
+                    logged_202a1e4_return = true;
+                    const uint8_t last_idx = static_cast<uint8_t>(ctx->trace_idx - 1);
+                    const uint32_t last_trace = ctx->trace_buffer[last_idx];
+                    std::cerr << "OverlayManager: Probe 0x0202A1E4"
+                              << " lr=0x" << std::hex << ctx->r[14]
+                              << " sp=0x" << ctx->r[13]
+                              << " r0=0x" << ctx->r[0]
+                              << " r1=0x" << ctx->r[1]
+                              << " r2=0x" << ctx->r[2]
+                              << " r3=0x" << ctx->r[3]
+                              << " r4=0x" << ctx->r[4]
+                              << " r5=0x" << ctx->r[5]
+                              << " r6=0x" << ctx->r[6]
+                              << " r7=0x" << ctx->r[7]
+                              << " cpsr=0x" << ctx->cpsr
+                              << " lastTrace=0x" << last_trace
+                              << "\n";
+                }
+
+                // This address is reached from an ARM BL callsite but also
+                // sits inside a valid Thumb stream. The current address-only
+                // dispatcher can otherwise stitch the two modes together and
+                // corrupt the boot helper state. Treat the ARM entry as a
+                // helper-style call/return until this region is made mode-aware.
+                ctx->r[15] = lr_exec_addr;
+                continue;
+            }
+        }
+
+        if (exec_addr == 0x0202A1E6 && ctx->r[14] != 0) {
+            const uint32_t lr_exec_addr = ctx->r[14] & ~1u;
+            if (lr_exec_addr == 0x02000C5C) {
+                static bool logged_202a1e6_return = false;
+                if (debug_overlay_probes && !logged_202a1e6_return) {
+                    logged_202a1e6_return = true;
+                    const uint8_t last_idx = static_cast<uint8_t>(ctx->trace_idx - 1);
+                    const uint32_t last_trace = ctx->trace_buffer[last_idx];
+                    std::cerr << "OverlayManager: Probe 0x0202A1E6"
+                              << " lr=0x" << std::hex << ctx->r[14]
+                              << " sp=0x" << ctx->r[13]
+                              << " r0=0x" << ctx->r[0]
+                              << " r1=0x" << ctx->r[1]
+                              << " r2=0x" << ctx->r[2]
+                              << " r3=0x" << ctx->r[3]
+                              << " r4=0x" << ctx->r[4]
+                              << " r5=0x" << ctx->r[5]
+                              << " r6=0x" << ctx->r[6]
+                              << " r7=0x" << ctx->r[7]
+                              << " cpsr=0x" << ctx->cpsr
+                              << " lastTrace=0x" << last_trace
+                              << "\n";
+                }
+
+                // Boot is currently re-entering the middle of this Thumb
+                // helper with garbage state from a sparse/corrupt call chain.
+                // Treat it as a helper return at this callsite until the
+                // upstream entry path is lifted correctly.
+                ctx->r[15] = lr_exec_addr;
+                continue;
+            }
         }
 
         if (exec_addr == 0x0203BB30) {
@@ -980,10 +1110,10 @@ void OverlayManager::ExecuteDynamicBranch(CPU_Context* ctx, uint32_t target_addr
             const uint8_t last_idx = static_cast<uint8_t>(ctx->trace_idx - 1);
             const uint32_t last_trace = ctx->trace_buffer[last_idx];
             if (last_trace == 0x02000D80) {
-                // The surrounding poll path consumes r4 as a compact status
-                // flag at 0x020254E8; normalize stale pointer-like values
-                // coming from this skipped helper callsite.
-                ctx->r[4] = (ctx->r[4] != 0) ? 1u : 0u;
+                // Preserve the helper-produced high bits in r4. The immediate
+                // SWAP_BUFFERS write at 0x02000D84 only cares that the command
+                // is issued, while the follow-up poll at 0x020254EA consumes
+                // r4>>9 as a readiness/status value.
                 ctx->r[15] = 0x02000D84;
                 continue;
             }

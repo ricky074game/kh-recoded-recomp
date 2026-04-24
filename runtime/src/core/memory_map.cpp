@@ -249,14 +249,14 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
         math_engine.div_numer = (math_engine.div_numer & 0xFFFFFFFF00000000LL) |
                                  (value & 0xFFFFFFFF);
         math_div_numer = static_cast<uint64_t>(math_engine.div_numer);
-        math_engine.ComputeDivision();
+        math_engine.StartDivision();
         return;
     }
     if (address == 0x04000294) {
         math_engine.div_numer = (math_engine.div_numer & 0x00000000FFFFFFFFLL) |
                                  (static_cast<int64_t>(value) << 32);
         math_div_numer = static_cast<uint64_t>(math_engine.div_numer);
-        math_engine.ComputeDivision();
+        math_engine.StartDivision();
         return;
     }
 
@@ -264,13 +264,13 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
         math_engine.div_denom = (math_engine.div_denom & 0xFFFFFFFF00000000LL) |
                                  (value & 0xFFFFFFFF);
         math_div_denom = static_cast<uint32_t>(value);
-        math_engine.ComputeDivision();
+        math_engine.StartDivision();
         return;
     }
     if (address == 0x0400029C) {
         math_engine.div_denom = (math_engine.div_denom & 0x00000000FFFFFFFFLL) |
                                  (static_cast<int64_t>(value) << 32);
-        math_engine.ComputeDivision();
+        math_engine.StartDivision();
         return;
     }
 
@@ -282,14 +282,14 @@ void NDSMemory::HandleHardwareWrite(uint32_t address, uint32_t value) {
     if (address == 0x040002B8) {
         math_engine.sqrt_param = (math_engine.sqrt_param & 0xFFFFFFFF00000000ULL) | value;
         math_sqrt_val = math_engine.sqrt_param;
-        math_engine.ComputeSqrt();
+        math_engine.StartSqrt();
         return;
     }
     if (address == 0x040002BC) {
         math_engine.sqrt_param = (math_engine.sqrt_param & 0x00000000FFFFFFFFULL) |
                                   (static_cast<uint64_t>(value) << 32);
         math_sqrt_val = math_engine.sqrt_param;
-        math_engine.ComputeSqrt();
+        math_engine.StartSqrt();
         return;
     }
 
@@ -321,10 +321,38 @@ void NDSMemory::StepHardware(int arm9_cycles) {
     TimerCore timer_core;
     timer_core.tmr = &timers_arm9;
     timer_core.irq = &irq_arm9;
+    timer_core.irq_arm7 = &irq_arm7;
+    timer_core.engine_a = &engine2d_a;
+    timer_core.engine_b = &engine2d_b;
     timer_core.StepTimers(arm9_cycles);
+    timer_core.tmr = &timers_arm7;
+    timer_core.irq = &irq_arm7;
+    timer_core.StepTimers(arm9_cycles);
+    timer_core.StepVideo(arm9_cycles);
 
-    const bool vblank_pending = (irq_arm9.if_reg & IRQBits::VBlank) != 0;
-    if (!vblank_pending) {
+    math_engine.Step(static_cast<uint32_t>(arm9_cycles));
+
+    const bool in_vblank = engine2d_a.IsVBlank();
+    const bool in_hblank = engine2d_a.IsHBlank() && !in_vblank;
+
+    if (!in_hblank) {
+        arm9_hblank_dma_serviced = false;
+    } else if (!arm9_hblank_dma_serviced) {
+        for (int channel = 0; channel < 4; ++channel) {
+            auto& dma = dma_arm9[channel];
+            if (!dma.enabled || dma.timing != DMAStartTiming::HBlank) {
+                continue;
+            }
+
+            dma.Execute(this);
+            if (dma.irq_on_end) {
+                irq_arm9.RaiseIRQ(IRQBits::DMA0 << channel);
+            }
+        }
+        arm9_hblank_dma_serviced = true;
+    }
+
+    if (!in_vblank) {
         arm9_vblank_dma_serviced = false;
         return;
     }

@@ -5,22 +5,22 @@ HWMathEngine g_math_engine;
 
 void ComputeDiv64() {
     g_math_engine.div_mode = DivMode::Div64_64;
-    g_math_engine.ComputeDivision();
+    g_math_engine.StartDivision();
 }
 
 void ComputeDiv32() {
     g_math_engine.div_mode = DivMode::Div32_32;
-    g_math_engine.ComputeDivision();
+    g_math_engine.StartDivision();
 }
 
 void ComputeSqrt64() {
     g_math_engine.sqrt_mode = SqrtMode::Sqrt64;
-    g_math_engine.ComputeSqrt();
+    g_math_engine.StartSqrt();
 }
 
 void ComputeSqrt32() {
     g_math_engine.sqrt_mode = SqrtMode::Sqrt32;
-    g_math_engine.ComputeSqrt();
+    g_math_engine.StartSqrt();
 }
 
 void HandleMathExceptions() {

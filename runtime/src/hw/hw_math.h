@@ -1,50 +1,34 @@
 #pragma once
 
-// ============================================================================
-// hw_math.h — Nintendo DS Hardware Math Engine Emulation
-//
-// The DS has a dedicated division and square root unit mapped to IO registers.
-// Games write operands, then read results. On real hardware this takes a few
-// cycles; we compute instantly and return. The "busy" flag is always 0.
-//
-// Reference: GBATEK §DS Math
-//   Division: 0x04000280 (DIVCNT) through 0x040002A8
-//   Sqrt:     0x040002B0 (SQRTCNT) through 0x040002B8
-// ============================================================================
-
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
-// ---- Division Modes (DIVCNT bits 0-1) ----
 enum class DivMode : uint8_t {
-    Div32_32 = 0, // 32-bit ÷ 32-bit = 32-bit quotient, 32-bit remainder
-    Div64_32 = 1, // 64-bit ÷ 32-bit = 64-bit quotient, 32-bit remainder
-    Div64_64 = 2  // 64-bit ÷ 64-bit = 64-bit quotient, 64-bit remainder
+    Div32_32 = 0,
+    Div64_32 = 1,
+    Div64_64 = 2
 };
 
-// ---- Square Root Modes (SQRTCNT bit 0) ----
 enum class SqrtMode : uint8_t {
-    Sqrt32 = 0, // sqrt of 32-bit input → 32-bit result
-    Sqrt64 = 1  // sqrt of 64-bit input → 32-bit result
+    Sqrt32 = 0,
+    Sqrt64 = 1
 };
 
 class HWMathEngine {
 public:
-    // ---- Division Registers ----
-    DivMode  div_mode      = DivMode::Div32_32;
-    int64_t  div_numer     = 0;  // DIVNUMER (64-bit, signed)
-    int64_t  div_denom     = 0;  // DIVDENOM (64-bit, signed)
-    int64_t  div_result    = 0;  // DIVRESULT (quotient)
-    int64_t  div_remainder = 0;  // DIVREMRESULT (remainder)
-    bool     div_by_zero   = false;
+    DivMode div_mode = DivMode::Div32_32;
+    int64_t div_numer = 0;
+    int64_t div_denom = 0;
+    int64_t div_result = 0;
+    int64_t div_remainder = 0;
+    bool div_by_zero = false;
+    uint32_t div_busy_cycles = 0;
 
-    // ---- Sqrt Registers ----
-    SqrtMode sqrt_mode     = SqrtMode::Sqrt32;
-    uint64_t sqrt_param    = 0;  // SQRTPARAM
-    uint32_t sqrt_result   = 0;  // SQRTRESULT
-
-    HWMathEngine() = default;
+    SqrtMode sqrt_mode = SqrtMode::Sqrt32;
+    uint64_t sqrt_param = 0;
+    uint32_t sqrt_result = 0;
+    uint32_t sqrt_busy_cycles = 0;
 
     static uint64_t IntegerSqrt(uint64_t value) {
         uint64_t bit = 1ull << 62;
@@ -67,136 +51,143 @@ public:
         return result;
     }
 
-private:
-    static int64_t SaturatedResult(bool negative, DivMode mode) {
-        if (mode == DivMode::Div32_32) {
-            return negative ? static_cast<int64_t>(std::numeric_limits<int32_t>::min())
-                            : static_cast<int64_t>(std::numeric_limits<int32_t>::max());
+    void Step(uint32_t cycles) {
+        if (div_busy_cycles > cycles) {
+            div_busy_cycles -= cycles;
+        } else {
+            div_busy_cycles = 0;
         }
-        return negative ? std::numeric_limits<int64_t>::min()
-                        : std::numeric_limits<int64_t>::max();
+
+        if (sqrt_busy_cycles > cycles) {
+            sqrt_busy_cycles -= cycles;
+        } else {
+            sqrt_busy_cycles = 0;
+        }
     }
 
-public:
+    void StartDivision() {
+        ComputeDivision();
+        div_busy_cycles = (div_mode == DivMode::Div32_32) ? 18u : 34u;
+    }
 
-    // Performs the division using the currently configured mode and operands.
-    // Per GBATEK: division by zero produces ±MAX result, remainder = numerator.
+    void StartSqrt() {
+        ComputeSqrt();
+        sqrt_busy_cycles = 13u;
+    }
+
     void ComputeDivision() {
-        div_by_zero = false;
+        const bool div0_flag = (div_denom == 0);
+        div_by_zero = div0_flag;
 
         switch (div_mode) {
             case DivMode::Div32_32: {
-                const int32_t n = static_cast<int32_t>(div_numer & 0xFFFFFFFFu);
-                const int32_t d = static_cast<int32_t>(div_denom & 0xFFFFFFFFu);
-                if (d == 0) {
-                    div_by_zero = true;
-                    div_result = SaturatedResult(n < 0, DivMode::Div32_32);
-                    div_remainder = static_cast<int64_t>(n);
+                const int32_t numer = static_cast<int32_t>(div_numer);
+                const int32_t denom = static_cast<int32_t>(div_denom);
+
+                if (denom == 0) {
+                    div_result = (numer < 0) ? 1 : -1;
+                    div_remainder = numer;
                     break;
                 }
-
-                if (n == std::numeric_limits<int32_t>::min() && d == -1) {
-                    div_result = static_cast<int64_t>(std::numeric_limits<int32_t>::min());
+                if (numer == std::numeric_limits<int32_t>::min() && denom == -1) {
+                    div_result = std::numeric_limits<int32_t>::min();
                     div_remainder = 0;
                     break;
                 }
 
-                div_result = static_cast<int64_t>(n / d);
-                div_remainder = static_cast<int64_t>(n % d);
+                div_result = static_cast<int64_t>(numer / denom);
+                div_remainder = static_cast<int64_t>(numer % denom);
                 break;
             }
+
             case DivMode::Div64_32: {
-                const int64_t n = div_numer;
-                const int32_t d32 = static_cast<int32_t>(div_denom & 0xFFFFFFFFu);
-                if (d32 == 0) {
-                    div_by_zero = true;
-                    div_result = SaturatedResult(n < 0, DivMode::Div64_32);
-                    div_remainder = n;
+                const int64_t numer = div_numer;
+                const int32_t denom32 = static_cast<int32_t>(div_denom);
+
+                if (denom32 == 0) {
+                    div_result = (numer < 0) ? 1 : -1;
+                    div_remainder = numer;
                     break;
                 }
-
-                const int64_t d = static_cast<int64_t>(d32);
-                if (n == std::numeric_limits<int64_t>::min() && d == -1) {
+                if (numer == std::numeric_limits<int64_t>::min() && denom32 == -1) {
                     div_result = std::numeric_limits<int64_t>::min();
                     div_remainder = 0;
                     break;
                 }
 
-                div_result = n / d;
-                div_remainder = n % d;
+                const int64_t denom = static_cast<int64_t>(denom32);
+                div_result = numer / denom;
+                div_remainder = numer % denom;
                 break;
             }
+
             case DivMode::Div64_64: {
-                const int64_t n = div_numer;
-                const int64_t d = div_denom;
-                if (d == 0) {
-                    div_by_zero = true;
-                    div_result = SaturatedResult(n < 0, DivMode::Div64_64);
-                    div_remainder = n;
+                const int64_t numer = div_numer;
+                const int64_t denom = div_denom;
+
+                if (denom == 0) {
+                    div_result = (numer < 0) ? 1 : -1;
+                    div_remainder = numer;
                     break;
                 }
-
-                if (n == std::numeric_limits<int64_t>::min() && d == -1) {
+                if (numer == std::numeric_limits<int64_t>::min() && denom == -1) {
                     div_result = std::numeric_limits<int64_t>::min();
                     div_remainder = 0;
                     break;
                 }
 
-                div_result = n / d;
-                div_remainder = n % d;
+                div_result = numer / denom;
+                div_remainder = numer % denom;
                 break;
             }
         }
     }
 
-    // Performs the square root using the currently configured mode.
     void ComputeSqrt() {
-        uint64_t input = 0;
-        switch (sqrt_mode) {
-            case SqrtMode::Sqrt32:
-                input = (sqrt_param & 0xFFFFFFFFull);
-                break;
-            case SqrtMode::Sqrt64:
-                input = sqrt_param;
-                break;
-        }
+        const uint64_t input =
+            (sqrt_mode == SqrtMode::Sqrt32) ? (sqrt_param & 0xFFFFFFFFull) : sqrt_param;
         sqrt_result = static_cast<uint32_t>(IntegerSqrt(input));
     }
 
-    // ---- Legacy interface for backward compatibility ----
     uint64_t div(uint64_t n, uint32_t d) {
-        if (d == 0) return 0;
-        return n / d;
+        return (d == 0) ? 0 : (n / d);
     }
 
     uint32_t sq(uint64_t v) {
         return static_cast<uint32_t>(std::sqrt(static_cast<double>(v)));
     }
 
-    // ---- DIVCNT register read (0x04000280) ----
     uint32_t ReadDIVCNT() const {
-        uint32_t val = static_cast<uint32_t>(div_mode);
-        if (div_by_zero) val |= (1u << 14);
-        // Busy flag (bit 15) = 0 since we compute instantly
-        return val;
+        uint32_t value = static_cast<uint32_t>(div_mode) & 0x3u;
+        if (div_by_zero) {
+            value |= (1u << 14);
+        }
+        if (div_busy_cycles != 0) {
+            value |= (1u << 15);
+        }
+        return value;
     }
 
     void WriteDIVCNT(uint32_t value) {
-        uint32_t mode = value & 0x3;
-        if (mode > 2) mode = 2;
+        uint32_t mode = value & 0x3u;
+        if (mode == 3u) {
+            mode = 1u;
+        }
         div_mode = static_cast<DivMode>(mode);
-        ComputeDivision(); // Re-compute on mode change
+        StartDivision();
     }
 
-    // ---- SQRTCNT register read (0x040002B0) ----
     uint32_t ReadSQRTCNT() const {
-        return static_cast<uint32_t>(sqrt_mode);
-        // Busy flag (bit 15) = 0
+        uint32_t value = static_cast<uint32_t>(sqrt_mode) & 0x1u;
+        if (sqrt_busy_cycles != 0) {
+            value |= (1u << 15);
+        }
+        return value;
     }
 
     void WriteSQRTCNT(uint32_t value) {
-        sqrt_mode = static_cast<SqrtMode>(value & 0x1);
-        ComputeSqrt();
+        sqrt_mode = static_cast<SqrtMode>(value & 0x1u);
+        StartSqrt();
     }
 };
 

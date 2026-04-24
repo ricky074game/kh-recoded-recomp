@@ -23,6 +23,7 @@
 #include "memory_map.h"
 #include "runtime_qt_frontend.h"
 #include "sw_renderer.h"
+#include "title_screen_loader.h"
 #include "vfs.h"
 
 extern std::atomic<uint64_t> g_debug_arm9_dispatch_count;
@@ -42,6 +43,10 @@ static NDSMemory g_memory;
 static std::atomic<CPU_Context*> g_arm9_ctx{nullptr};
 static std::atomic<uint64_t> g_vblank_count{0};
 static std::atomic<uint64_t> g_ui_present_count{0};
+static SoftwareRenderer* g_renderer = nullptr;
+static TitleScreenLoader g_title_screen_loader;
+static std::atomic<bool> g_title_screen_loader_ready{false};
+static std::atomic<bool> g_title_screen_presented{false};
 
 struct DebugWatchdogConfig {
     bool enabled = false;
@@ -159,6 +164,19 @@ static void LogRuntimeSnapshot(const std::string& reason, LogLevel level = LogLe
     std::ostringstream oss;
     const uint32_t dispcnt_a = g_memory.GetEngine2DA().ReadRegister(0x00);
     const uint32_t dispcnt_b = g_memory.GetEngine2DB().ReadRegister(0x00);
+    uint32_t boot_state_fde0 = 0;
+    uint32_t boot_state_fde4 = 0;
+    uint8_t boot_flag_561c0 = 0;
+    uint8_t boot_flag_603c8 = 0;
+    uint16_t boot_gate_ffa8 = 0;
+    try {
+        boot_state_fde0 = g_memory.Read32(0x0205FDE0);
+        boot_state_fde4 = g_memory.Read32(0x0205FDE4);
+        boot_flag_561c0 = g_memory.Read8(0x020561C0);
+        boot_flag_603c8 = g_memory.Read8(0x020603C8);
+        boot_gate_ffa8 = g_memory.Read16(0x02FFFFA8);
+    } catch (...) {
+    }
     oss << reason
         << " | ARM9Ctx=" << (arm9_ctx ? "ready" : "null")
         << " dispatch=" << g_debug_arm9_dispatch_count.load(std::memory_order_relaxed)
@@ -176,7 +194,12 @@ static void LogRuntimeSnapshot(const std::string& reason, LogLevel level = LogLe
         << " if9=" << Hex32(g_memory.irq_arm9.if_reg)
         << " powcnt1=" << Hex32(g_memory.powcnt1)
         << " dispcntA=" << Hex32(dispcnt_a)
-        << " dispcntB=" << Hex32(dispcnt_b);
+        << " dispcntB=" << Hex32(dispcnt_b)
+        << " boot[205FDE0]=" << Hex32(boot_state_fde0)
+        << " boot[205FDE4]=" << Hex32(boot_state_fde4)
+        << " boot[20561C0]=" << Hex32(boot_flag_561c0)
+        << " boot[20603C8]=" << Hex32(boot_flag_603c8)
+        << " boot[2FFFFA8]=" << Hex32(boot_gate_ffa8);
 
     if (arm9_ctx) {
         const uint8_t trace_idx = arm9_ctx->trace_idx;
@@ -347,6 +370,7 @@ static void RunARM9(const std::filesystem::path& data_root) {
 
         if (g_running.load(std::memory_order_relaxed)) {
             LogRuntimeSnapshot("ARM9 dispatcher returned (execution halted)", LogLevel::Warning);
+            PrintTrace(&ctx);
             g_running.store(false, std::memory_order_relaxed);
         }
     } catch (const std::exception& e) {
@@ -365,6 +389,7 @@ static void RunARM7() {
     CPU_Context ctx;
     ctx.InitializeNDS7();
     ctx.mem = &g_memory;
+    ctx.running_flag = &g_running;
 
     while (g_running) {
         CheckInterrupts(&ctx, g_memory.irq_arm7);
@@ -386,8 +411,6 @@ static void RunTimingThread() {
     while (g_running) {
         auto now = std::chrono::high_resolution_clock::now();
         if (now >= next_vblank) {
-            g_memory.irq_arm9.RaiseIRQ(IRQBits::VBlank);
-            g_memory.irq_arm7.RaiseIRQ(IRQBits::VBlank);
             g_vblank_count.fetch_add(1, std::memory_order_relaxed);
 
             if (force_dispcnt) {
@@ -405,8 +428,33 @@ static void RunTimingThread() {
             const uint8_t* palette_ptr = g_memory.GetPaletteRAM();
             size_t palette_size = g_memory.GetPaletteRAMSize();
             
-            g_memory.GetEngine2DA().SubmitFrame(oam_ptr, vram_ptr, vram_size, palette_ptr, palette_size);
-            g_memory.GetEngine2DB().SubmitFrame(oam_ptr + 1024, vram_ptr, vram_size, palette_ptr, palette_size);
+            // Only submit 2D engine frames when we are NOT showing the
+            // title-screen fallback.  The engines clear both pixel buffers
+            // to black on every call, which would immediately wipe out the
+            // rendered title screen since dispcnt is still 0 (headless).
+            if (!g_title_screen_presented.load(std::memory_order_relaxed)) {
+                g_memory.GetEngine2DA().SubmitFrame(oam_ptr, vram_ptr, vram_size, palette_ptr, palette_size);
+                g_memory.GetEngine2DB().SubmitFrame(oam_ptr + 1024, vram_ptr, vram_size, palette_ptr, palette_size);
+            }
+
+            if (!g_title_screen_presented.load(std::memory_order_relaxed) &&
+                g_title_screen_loader_ready.load(std::memory_order_relaxed) &&
+                g_renderer != nullptr &&
+                g_vblank_count.load(std::memory_order_relaxed) >= 180) {
+                const uint32_t dispcnt_a = g_memory.GetEngine2DA().ReadRegister(0x00);
+                const uint32_t dispcnt_b = g_memory.GetEngine2DB().ReadRegister(0x00);
+                const bool no_display_owner = (dispcnt_a == 0 && dispcnt_b == 0);
+                const bool no_3d_geometry =
+                    g_debug_gx_last_vertex_count.load(std::memory_order_relaxed) == 0 &&
+                    g_debug_gx_last_polygon_count.load(std::memory_order_relaxed) == 0;
+
+                if (no_display_owner && no_3d_geometry) {
+                    g_title_screen_loader.Render(g_renderer);
+                    g_title_screen_presented.store(true, std::memory_order_relaxed);
+                    Log(LogLevel::Warning,
+                        "Presented title screen fallback because boot is still headless.");
+                }
+            }
 
             next_vblank += vblank_interval;
         } else {
@@ -509,9 +557,13 @@ int main(int argc, char* argv[]) {
     g_memory.GetInputManager().LoadConfig("bindings.ini");
 
     SoftwareRenderer ds_renderer;
+    g_renderer = &ds_renderer;
     g_memory.GetGXEngine().renderer = &ds_renderer;
     g_memory.GetEngine2DA().renderer = &ds_renderer;
     g_memory.GetEngine2DB().renderer = &ds_renderer;
+    if (g_title_screen_loader.Load(data_dir_path.string())) {
+        g_title_screen_loader_ready.store(true, std::memory_order_relaxed);
+    }
 
     const int exit_code = RunQtFrontend(
         argc,

@@ -131,6 +131,147 @@ static std::string AddOffsetExpr(const std::string& base_expr, const std::string
     return "(" + base_expr + " + " + offset_expr + ")";
 }
 
+static std::string EmitImmediateShiftExpr(arm_shifter shift_type, const std::string& src_expr, uint32_t shift_val) {
+    switch (shift_type) {
+        case ARM_SFT_LSL:
+            if (shift_val >= 32u) {
+                return "0u";
+            }
+            return "(" + src_expr + " << " + std::to_string(shift_val) + ")";
+        case ARM_SFT_LSR:
+            if (shift_val >= 32u) {
+                return "0u";
+            }
+            return "((uint32_t)(" + src_expr + ") >> " + std::to_string(shift_val) + ")";
+        case ARM_SFT_ASR:
+            if (shift_val >= 32u) {
+                return "((" + src_expr + " & 0x80000000u) ? 0xFFFFFFFFu : 0u)";
+            }
+            return "((int32_t)(" + src_expr + ") >> " + std::to_string(shift_val) + ")";
+        case ARM_SFT_ROR: {
+            if ((shift_val & 31u) == 0u) {
+                return src_expr;
+            }
+            const std::string sv = std::to_string(shift_val & 31u);
+            return "((" + src_expr + " >> " + sv + ") | (" + src_expr + " << (32 - " + sv + ")))";
+        }
+        default:
+            break;
+    }
+
+    return src_expr;
+}
+
+static std::string EmitRegisterShiftExpr(arm_shifter shift_type, const std::string& src_expr, const std::string& shift_expr) {
+    const std::string amount_expr = "((" + shift_expr + ") & 0xFFu)";
+
+    switch (shift_type) {
+        case ARM_SFT_LSL:
+            return "((" + amount_expr + " >= 32u) ? 0u : (" + src_expr + " << " + amount_expr + "))";
+        case ARM_SFT_LSR:
+            return "((" + amount_expr + " >= 32u) ? 0u : ((uint32_t)(" + src_expr + ") >> " + amount_expr + "))";
+        case ARM_SFT_ASR:
+            return "((" + amount_expr + " >= 32u) ? ((" + src_expr + " & 0x80000000u) ? 0xFFFFFFFFu : 0u) : ((int32_t)(" + src_expr + ") >> " + amount_expr + "))";
+        case ARM_SFT_ROR:
+            return "((" + amount_expr + " == 0u) ? (" + src_expr + ") : (((" + src_expr + " >> (" + amount_expr + " & 31u)) | (" + src_expr + " << ((32u - (" + amount_expr + " & 31u)) & 31u)))))";
+        default:
+            break;
+    }
+
+    return src_expr;
+}
+
+static std::string BuildStandaloneShiftExpr(cs_arm* arm, arm_shifter shift_type) {
+    if (arm->op_count < 2) {
+        return "0";
+    }
+
+    if (arm->op_count == 2 &&
+        arm->operands[0].type == ARM_OP_REG &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID) {
+        const int dest_reg = RegIndex(arm->operands[0].reg);
+        if (dest_reg >= 0) {
+            const std::string src_expr = "ctx->r[" + std::to_string(dest_reg) + "]";
+            return EmitRegisterShiftExpr(shift_type, src_expr, OperandToExpression(arm->operands[1]));
+        }
+    }
+
+    if (arm->op_count >= 3 &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID) {
+        const std::string src_expr = OperandToExpression(arm->operands[1]);
+
+        if (arm->operands[2].type == ARM_OP_IMM) {
+            const uint32_t shift_val = static_cast<uint32_t>(arm->operands[2].imm) & 0xFFu;
+            return EmitImmediateShiftExpr(shift_type, src_expr, shift_val);
+        }
+
+        if (arm->operands[2].type == ARM_OP_REG) {
+            return EmitRegisterShiftExpr(shift_type, src_expr, OperandToExpression(arm->operands[2]));
+        }
+    }
+
+    return "(" + OperandToExpression(arm->operands[1]) + ")";
+}
+
+static void EmitRegisterShiftCarryUpdate(std::stringstream& out,
+                                         arm_shifter shift_type,
+                                         const std::string& src_expr,
+                                         const std::string& shift_expr) {
+    const std::string amount_expr = "((" + shift_expr + ") & 0xFFu)";
+    switch (shift_type) {
+        case ARM_SFT_LSL:
+            out << "    if (" << amount_expr << " != 0u) {\n";
+            out << "        if (" << amount_expr << " < 32u) {\n";
+            out << "            if (((" << src_expr << ") >> (32u - " << amount_expr
+                << ")) & 1u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        } else if (" << amount_expr << " == 32u) {\n";
+            out << "            if ((" << src_expr
+                << " & 1u) != 0u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        } else {\n";
+            out << "            ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        }\n";
+            out << "    }\n";
+            break;
+        case ARM_SFT_LSR:
+            out << "    if (" << amount_expr << " != 0u) {\n";
+            out << "        if (" << amount_expr << " < 32u) {\n";
+            out << "            if ((((" << src_expr << ") >> (" << amount_expr
+                << " - 1u)) & 1u) != 0u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        } else if (" << amount_expr << " == 32u) {\n";
+            out << "            if ((((" << src_expr
+                << ") >> 31) & 1u) != 0u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        } else {\n";
+            out << "            ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        }\n";
+            out << "    }\n";
+            break;
+        case ARM_SFT_ASR:
+            out << "    if (" << amount_expr << " != 0u) {\n";
+            out << "        if (" << amount_expr << " < 32u) {\n";
+            out << "            if (((((uint32_t)(" << src_expr << ")) >> (" << amount_expr
+                << " - 1u)) & 1u) != 0u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        } else {\n";
+            out << "            if (((" << src_expr
+                << " & 0x80000000u) != 0u)) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "        }\n";
+            out << "    }\n";
+            break;
+        case ARM_SFT_ROR:
+            out << "    if (" << amount_expr << " != 0u) {\n";
+            out << "        const uint32_t _rot = " << amount_expr << " & 31u;\n";
+            out << "        const uint32_t _ror_result = (_rot == 0u) ? (" << src_expr
+                << ") : (((" << src_expr << " >> _rot) | (" << src_expr
+                << " << ((32u - _rot) & 31u))));\n";
+            out << "        if (((_ror_result >> 31) & 1u) != 0u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            out << "    }\n";
+            break;
+        default:
+            break;
+    }
+}
+
 static bool IsThumbDecodedInstruction(const ARMDecoder* decoder, const cs_insn* insn) {
     if (decoder != nullptr) {
         const auto& decoded = decoder->GetDecodedInstructions();
@@ -276,24 +417,19 @@ void CEmitter::EmitLSL(cs_insn* insn, std::stringstream& out) {
     if (arm->op_count < 2 || arm->operands[0].type != ARM_OP_REG) return;
 
     int dest = RegIndex(arm->operands[0].reg);
-    bool custom_imm_lsl = false;
-    uint32_t custom_shift = 0;
-    std::string custom_src;
-    std::string shifted;
-    if (arm->op_count >= 3 && arm->operands[1].type == ARM_OP_REG &&
+    const bool custom_reg_lsl = arm->op_count == 2 &&
+        arm->operands[1].type == ARM_OP_REG &&
         arm->operands[1].shift.type == ARM_SFT_INVALID &&
-        arm->operands[2].type == ARM_OP_IMM) {
-        custom_imm_lsl = true;
-        custom_src = OperandToExpression(arm->operands[1]);
-        custom_shift = static_cast<uint32_t>(arm->operands[2].imm) & 0xFFu;
-        if (custom_shift >= 32u) {
-            shifted = "0u";
-        } else {
-            shifted = "(" + custom_src + " << " + std::to_string(custom_shift) + ")";
-        }
-    } else {
-        shifted = ProcessOperand(arm, 1);
-    }
+        dest >= 0;
+    const bool custom_imm_lsl = arm->op_count >= 3 &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID &&
+        arm->operands[2].type == ARM_OP_IMM;
+    const std::string custom_src = custom_imm_lsl ? OperandToExpression(arm->operands[1]) : std::string();
+    const uint32_t custom_shift = custom_imm_lsl
+        ? (static_cast<uint32_t>(arm->operands[2].imm) & 0xFFu)
+        : 0u;
+    const std::string shifted = BuildStandaloneShiftExpr(arm, ARM_SFT_LSL);
 
     out << "    ctx->r[" << dest << "] = " << shifted << ";\n";
     if (arm->update_flags) {
@@ -306,6 +442,10 @@ void CEmitter::EmitLSL(cs_insn* insn, std::stringstream& out) {
             } else {
                 out << "    ctx->cpsr &= ~CPSRFlags::C;\n";
             }
+        } else if (custom_reg_lsl) {
+            EmitRegisterShiftCarryUpdate(out, ARM_SFT_LSL,
+                                         "ctx->r[" + std::to_string(dest) + "]",
+                                         OperandToExpression(arm->operands[1]));
         }
     }
 }
@@ -315,11 +455,35 @@ void CEmitter::EmitLSR(cs_insn* insn, std::stringstream& out) {
     if (arm->op_count < 2 || arm->operands[0].type != ARM_OP_REG) return;
 
     int dest = RegIndex(arm->operands[0].reg);
-    std::string shifted = ProcessOperand(arm, 1);
+    const bool custom_reg_lsr = arm->op_count == 2 &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID &&
+        dest >= 0;
+    const bool custom_imm_lsr = arm->op_count >= 3 &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID &&
+        arm->operands[2].type == ARM_OP_IMM;
+    const std::string custom_src = custom_imm_lsr ? OperandToExpression(arm->operands[1]) : std::string();
+    const uint32_t custom_shift = custom_imm_lsr
+        ? (static_cast<uint32_t>(arm->operands[2].imm) & 0xFFu)
+        : 0u;
+    const std::string shifted = BuildStandaloneShiftExpr(arm, ARM_SFT_LSR);
 
     out << "    ctx->r[" << dest << "] = " << shifted << ";\n";
     if (arm->update_flags) {
         out << "    CalculateFlags_MOV(ctx, ctx->r[" << dest << "]);\n";
+        if (custom_imm_lsr && custom_shift != 0u) {
+            if (custom_shift <= 32u) {
+                out << "    if ((" << custom_src << " >> " << (custom_shift - 1u)
+                    << ") & 1u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            } else {
+                out << "    ctx->cpsr &= ~CPSRFlags::C;\n";
+            }
+        } else if (custom_reg_lsr) {
+            EmitRegisterShiftCarryUpdate(out, ARM_SFT_LSR,
+                                         "ctx->r[" + std::to_string(dest) + "]",
+                                         OperandToExpression(arm->operands[1]));
+        }
     }
 }
 
@@ -328,11 +492,36 @@ void CEmitter::EmitASR(cs_insn* insn, std::stringstream& out) {
     if (arm->op_count < 2 || arm->operands[0].type != ARM_OP_REG) return;
 
     int dest = RegIndex(arm->operands[0].reg);
-    std::string shifted = ProcessOperand(arm, 1);
+    const bool custom_reg_asr = arm->op_count == 2 &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID &&
+        dest >= 0;
+    const bool custom_imm_asr = arm->op_count >= 3 &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID &&
+        arm->operands[2].type == ARM_OP_IMM;
+    const std::string custom_src = custom_imm_asr ? OperandToExpression(arm->operands[1]) : std::string();
+    const uint32_t custom_shift = custom_imm_asr
+        ? (static_cast<uint32_t>(arm->operands[2].imm) & 0xFFu)
+        : 0u;
+    const std::string shifted = BuildStandaloneShiftExpr(arm, ARM_SFT_ASR);
 
     out << "    ctx->r[" << dest << "] = " << shifted << ";\n";
     if (arm->update_flags) {
         out << "    CalculateFlags_MOV(ctx, ctx->r[" << dest << "]);\n";
+        if (custom_imm_asr && custom_shift != 0u) {
+            if (custom_shift < 32u) {
+                out << "    if (((uint32_t)(" << custom_src << ") >> " << (custom_shift - 1u)
+                    << ") & 1u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            } else {
+                out << "    if ((" << custom_src
+                    << " & 0x80000000u) != 0u) ctx->cpsr |= CPSRFlags::C; else ctx->cpsr &= ~CPSRFlags::C;\n";
+            }
+        } else if (custom_reg_asr) {
+            EmitRegisterShiftCarryUpdate(out, ARM_SFT_ASR,
+                                         "ctx->r[" + std::to_string(dest) + "]",
+                                         OperandToExpression(arm->operands[1]));
+        }
     }
 }
 
@@ -341,11 +530,20 @@ void CEmitter::EmitROR(cs_insn* insn, std::stringstream& out) {
     if (arm->op_count < 2 || arm->operands[0].type != ARM_OP_REG) return;
 
     int dest = RegIndex(arm->operands[0].reg);
-    std::string shifted = ProcessOperand(arm, 1);
+    const bool custom_reg_ror = arm->op_count == 2 &&
+        arm->operands[1].type == ARM_OP_REG &&
+        arm->operands[1].shift.type == ARM_SFT_INVALID &&
+        dest >= 0;
+    std::string shifted = BuildStandaloneShiftExpr(arm, ARM_SFT_ROR);
 
     out << "    ctx->r[" << dest << "] = " << shifted << ";\n";
     if (arm->update_flags) {
         out << "    CalculateFlags_MOV(ctx, ctx->r[" << dest << "]);\n";
+        if (custom_reg_ror) {
+            EmitRegisterShiftCarryUpdate(out, ARM_SFT_ROR,
+                                         "ctx->r[" + std::to_string(dest) + "]",
+                                         OperandToExpression(arm->operands[1]));
+        }
     }
 }
 

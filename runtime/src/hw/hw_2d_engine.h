@@ -256,6 +256,11 @@ class NDS2DEngine {
 public:
     // ---- Display Control (DISPCNT) ----
     uint32_t dispcnt = 0;
+    uint16_t dispstat = 0;
+    uint16_t vcount = 0;
+    uint32_t scanline_cycle = 0;
+    bool in_hblank = false;
+    bool in_vblank = false;
 
     // ---- Background Layers ----
     std::array<BGLayer2D, 4> bg_layers;
@@ -295,6 +300,16 @@ public:
                      size_t palette_size);
 
     void SetSubEngine(bool is_sub) { is_sub_engine = is_sub; }
+    void MirrorTimingFrom(const NDS2DEngine& other);
+    void UpdateBlankFlags();
+    void UpdateVCountMatchFlag();
+    bool IsVBlank() const { return in_vblank; }
+    bool IsHBlank() const { return in_hblank; }
+    bool IsVBlankIRQEnabled() const { return (dispstat & (1u << 3)) != 0; }
+    bool IsHBlankIRQEnabled() const { return (dispstat & (1u << 4)) != 0; }
+    bool IsVCountIRQEnabled() const { return (dispstat & (1u << 5)) != 0; }
+    bool IsVCountMatch() const { return (dispstat & (1u << 2)) != 0; }
+    uint16_t GetVCountCompare() const;
 
     // ---- Decoded State Queries ----
     uint8_t GetBGMode() const { return dispcnt & 0x7; }

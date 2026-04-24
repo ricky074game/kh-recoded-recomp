@@ -77,3 +77,35 @@ TEST(HWBiosTest, SWI12WritesUsingHalfwordAccess) {
 
     HwBios::SetActiveContext(nullptr);
 }
+
+TEST(HWBiosTest, SWI10BitUnPackExpands2bppTo8bpp) {
+    NDSMemory mem;
+    CPU_Context ctx;
+    ctx.mem = &mem;
+
+    const uint32_t src = 0x02005000;
+    const uint32_t dst = 0x02006000;
+    const uint32_t info = 0x02007000;
+
+    // Packed 2bpp units in LSB-first order: 0,1,2,3.
+    mem.Write8(src, 0xE4);
+
+    mem.Write16(info + 0, 1);   // source length in bytes
+    mem.Write8(info + 2, 2);    // source unit width
+    mem.Write8(info + 3, 8);    // destination unit width
+    mem.Write32(info + 4, 0);   // no offset
+
+    ctx.r[0] = src;
+    ctx.r[1] = dst;
+    ctx.r[2] = info;
+    HwBios::SetActiveContext(&ctx);
+
+    HwBios::HandleARM9_SWI(0x10);
+
+    EXPECT_EQ(mem.Read8(dst + 0), 0u);
+    EXPECT_EQ(mem.Read8(dst + 1), 1u);
+    EXPECT_EQ(mem.Read8(dst + 2), 2u);
+    EXPECT_EQ(mem.Read8(dst + 3), 3u);
+
+    HwBios::SetActiveContext(nullptr);
+}

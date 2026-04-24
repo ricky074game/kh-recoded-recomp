@@ -307,11 +307,17 @@ NDS2DEngine::NDS2DEngine() {
     for (int i = 0; i < 4; ++i) {
         bg_layers[i] = BGLayer2D{};
     }
+    UpdateBlankFlags();
+    UpdateVCountMatchFlag();
 }
 
 void NDS2DEngine::WriteRegister(uint32_t offset, uint32_t value) {
     switch (offset) {
         case 0x00: dispcnt = value; break; // DISPCNT
+        case 0x04:
+            dispstat = static_cast<uint16_t>((dispstat & 0x0007u) | (value & 0xFFF8u));
+            UpdateVCountMatchFlag();
+            break;
 
         // BGxCNT (8-bit or 16-bit)
         case 0x08: bg_layers[0].bgcnt_raw = value & 0xFFFF;
@@ -384,7 +390,8 @@ void NDS2DEngine::WriteRegister(uint32_t offset, uint32_t value) {
 uint32_t NDS2DEngine::ReadRegister(uint32_t offset) const {
     switch (offset) {
         case 0x00: return dispcnt;
-        case 0x06: { static uint16_t fake_vcount = 0; fake_vcount = (fake_vcount + 1) % 263; return fake_vcount; }
+        case 0x04: return dispstat;
+        case 0x06: return vcount;
         case 0x08: return bg_layers[0].bgcnt_raw;
         case 0x0A: return bg_layers[1].bgcnt_raw;
         case 0x0C: return bg_layers[2].bgcnt_raw;
@@ -398,6 +405,41 @@ uint32_t NDS2DEngine::ReadRegister(uint32_t offset) const {
 void NDS2DEngine::UpdateBGState(int bg) {
     bg_layers[bg].enabled = IsBGEnabled(bg);
     bg_layers[bg].priority = bg_layers[bg].control.priority;
+}
+
+void NDS2DEngine::MirrorTimingFrom(const NDS2DEngine& other) {
+    dispstat = other.dispstat;
+    vcount = other.vcount;
+    in_hblank = other.in_hblank;
+    in_vblank = other.in_vblank;
+}
+
+void NDS2DEngine::UpdateBlankFlags() {
+    in_vblank = (vcount >= 192 && vcount < 262);
+
+    if (in_vblank) {
+        dispstat |= 0x0001u;
+    } else {
+        dispstat &= static_cast<uint16_t>(~0x0001u);
+    }
+
+    if (in_hblank) {
+        dispstat |= 0x0002u;
+    } else {
+        dispstat &= static_cast<uint16_t>(~0x0002u);
+    }
+}
+
+uint16_t NDS2DEngine::GetVCountCompare() const {
+    return static_cast<uint16_t>(((dispstat >> 8) & 0x00FFu) | ((dispstat & 0x0080u) << 1));
+}
+
+void NDS2DEngine::UpdateVCountMatchFlag() {
+    if (vcount == GetVCountCompare()) {
+        dispstat |= 0x0004u;
+    } else {
+        dispstat &= static_cast<uint16_t>(~0x0004u);
+    }
 }
 
 void NDS2DEngine::ParseOAM(const uint8_t* oam_data,

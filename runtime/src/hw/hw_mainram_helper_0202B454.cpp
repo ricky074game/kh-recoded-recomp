@@ -118,6 +118,26 @@ void mainram_helper_0204D050_stub(CPU_Context* ctx) {
 
 void mainram_sparse_return_lr_stub(CPU_Context* ctx) {
     const uint32_t lr_exec_addr = ctx->r[14] & ~1u;
+    if (ctx->dispatch_pc == 0x02D2C3D0) {
+        static bool logged_02d2c3d0 = false;
+        if (!logged_02d2c3d0) {
+            logged_02d2c3d0 = true;
+            const uint8_t last_idx = static_cast<uint8_t>(ctx->trace_idx - 1);
+            const uint32_t last_trace = ctx->trace_buffer[last_idx];
+            std::cerr << "mainram_sparse_return_lr_stub: probe 0x02D2C3D0"
+                      << " lr=0x" << std::hex << lr_exec_addr
+                      << " lastTrace=0x" << last_trace
+                      << " r0=0x" << ctx->r[0]
+                      << " r1=0x" << ctx->r[1]
+                      << " r2=0x" << ctx->r[2]
+                      << " r3=0x" << ctx->r[3]
+                      << " r4=0x" << ctx->r[4]
+                      << " r5=0x" << ctx->r[5]
+                      << " r6=0x" << ctx->r[6]
+                      << " r7=0x" << ctx->r[7]
+                      << "\n";
+        }
+    }
     if (lr_exec_addr != 0 && lr_exec_addr != (ctx->dispatch_pc & ~1u)) {
         ctx->r[15] = lr_exec_addr;
         return;
@@ -199,6 +219,105 @@ void mainram_helper_0200D510_stub(CPU_Context* ctx) {
     ctx->r[15] = 0x02000C50;
 }
 
+
+void mainram_helper_0203A85A_stub(CPU_Context* ctx) {
+    uint32_t r0 = ctx->mem->Read32(0x0203A89C);
+    
+    ctx->mem->Write32(r0, ctx->r[1]);
+    for (int i = 0; i < 13; i++) {
+        uint32_t val = ctx->mem->Read32(0x0203A8A4 + i * 4);
+        ctx->mem->Write32(r0 + 4 + i * 4, val);
+    }
+    
+    ctx->r[0] = 1;
+    ctx->r[15] = ctx->r[14] & ~1u;
+}
+
+void mainram_helper_02019D20_stub(CPU_Context* ctx) {
+    ctx->mem->Write32(ctx->r[0] + 4, ctx->r[1]);
+    ctx->mem->Write32(ctx->r[0] + 0x14, ctx->r[1]);
+    if (ctx->r[6] == 0) {
+        ctx->r[15] = 0x02019D50;
+    } else {
+        ctx->r[4] = ctx->r[13];
+        ctx->r[0] = ctx->r[4];
+        ctx->r[14] = 0x02019D3C;
+        ctx->r[15] = 0x02006B90;
+    }
+}
+
+void mainram_helper_02019D3C_stub(CPU_Context* ctx) {
+    if (ctx->r[0] != 0) {
+        ctx->r[0] = ctx->r[4];
+        ctx->r[14] = 0x02019D3C;
+        ctx->r[15] = 0x02006B90;
+    } else {
+        ctx->r[0] = ctx->r[4];
+        ctx->r[1] = ctx->r[6];
+        ctx->r[14] = 0x02019D50;
+        ctx->r[15] = 0x020059D4;
+    }
+}
+
+void mainram_helper_02019D50_stub(CPU_Context* ctx) {
+    if (ctx->r[5] == 0) {
+        ctx->r[15] = 0x02019D68;
+    } else {
+        ctx->r[0] = ctx->r[5];
+        ctx->r[14] = 0x02019D60;
+        ctx->r[15] = 0x02006BC0;
+    }
+}
+
+void mainram_helper_02019D60_stub(CPU_Context* ctx) {
+    if (ctx->r[0] != 0) {
+        ctx->r[0] = ctx->r[5];
+        ctx->r[14] = 0x02019D60;
+        ctx->r[15] = 0x02006BC0;
+    } else {
+        ctx->r[15] = 0x02019D68;
+    }
+}
+
+void mainram_helper_02019D68_stub(CPU_Context* ctx) {
+    ctx->mem->Write32(0x04000448, 1);
+    ctx->mem->Write32(0x04000440, 2);
+    ctx->r[13] += 0x40;
+    ctx->r[4] = ctx->mem->Read32(ctx->r[13]);
+    ctx->r[5] = ctx->mem->Read32(ctx->r[13] + 4);
+    ctx->r[6] = ctx->mem->Read32(ctx->r[13] + 8);
+    ctx->r[15] = ctx->mem->Read32(ctx->r[13] + 12) & ~1u;
+    ctx->r[13] += 16;
+}
+
+void mainram_helper_0202ABA8_stub(CPU_Context* ctx) {
+    ctx->r[1] = ctx->mem->Read32(0x0202ABC0);
+    ctx->r[0] = 0;
+    
+    ctx->mem->Write16(ctx->r[1] + 2, 0);
+    ctx->mem->Write16(ctx->r[1] + 4, 0);
+    ctx->mem->Write16(ctx->r[1], 0);
+
+    ctx->r[1] = ctx->mem->Read32(0x0202ABC4);
+    ctx->r[2] = 0x30;
+
+    // Inline memset (blx 0x1FF86FC)
+    for(uint32_t i = 0; i < ctx->r[2]; i++) {
+        ctx->mem->Write8(ctx->r[1] + i, ctx->r[0] & 0xFF);
+    }
+
+    // Inline pop {r3, pc}
+    ctx->r[0] = 1;
+    ctx->r[15] = ctx->r[14] & ~1u;
+}
+
+void mainram_helper_0202ABBC_stub(CPU_Context* ctx) {
+    ctx->r[0] = 1;
+    ctx->r[3] = ctx->mem->Read32(ctx->r[13]);
+    ctx->r[15] = ctx->mem->Read32(ctx->r[13] + 4);
+    ctx->r[13] += 8;
+}
+
 } // namespace
 
 void RegisterMainRAMHelperFunctions(NDSMemory* mem) {
@@ -223,4 +342,21 @@ void RegisterMainRAMHelperFunctions(NDSMemory* mem) {
     mem->GetOverlayManager().RegisterStaticFunction(0x02014038, mainram_sparse_return_lr_stub);
     mem->GetOverlayManager().RegisterStaticFunction(0x02025082, mainram_sparse_return_lr_stub);
     mem->GetOverlayManager().RegisterStaticFunction(0x0202A650, mainram_sparse_return_lr_stub);
+
+    // Bootflow helpers
+    mem->GetOverlayManager().RegisterStaticFunction(0x0203A85A, mainram_helper_0203A85A_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x0202ABA8, mainram_helper_0202ABA8_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x0202ABBC, mainram_helper_0202ABBC_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x02019D20, mainram_helper_02019D20_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x02019D3C, mainram_helper_02019D3C_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x02019D50, mainram_helper_02019D50_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x02019D60, mainram_helper_02019D60_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x02019D68, mainram_helper_02019D68_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x02D2C3D0, mainram_sparse_return_lr_stub);
+
+    // Additional unmapped boot branches
+    mem->GetOverlayManager().RegisterStaticFunction(0x01FFA1F4, mainram_sparse_return_lr_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x02FFFD9C, mainram_sparse_return_lr_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x0202A73A, mainram_sparse_return_lr_stub);
+    mem->GetOverlayManager().RegisterStaticFunction(0x0202A786, mainram_sparse_return_lr_stub);
 }
