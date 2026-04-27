@@ -43,6 +43,8 @@ if(WIN32)
     list(APPEND PLATFORM_LIBS ws2_32)
 endif()
 
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" KH_REPO_ROOT_CMAKE)
+
 file(GLOB_RECURSE ALL_SOURCES
     "src/core/*.cpp"
     "src/vfs/*.cpp"
@@ -174,3 +176,38 @@ if(TEST_SOURCES)
     include(GoogleTest)
     gtest_discover_tests(runtime_tests)
 endif()
+
+add_executable(recovery_plan_tests tests/test_boot_recovery_plan.cpp)
+target_include_directories(recovery_plan_tests
+    PRIVATE
+        src
+        src/hw
+        src/core
+        src/vfs
+        src/backends
+        src/generated
+        ../lifter/src
+        ../tools/miniaudio
+        ${CAPSTONE_INCLUDE_PATHS})
+target_compile_definitions(recovery_plan_tests
+    PRIVATE
+        KH_REPO_ROOT="${KH_REPO_ROOT_CMAKE}")
+target_link_libraries(recovery_plan_tests
+    PRIVATE
+        runtime_core
+        lifter_core
+        ${CAPSTONE_LINK_TARGETS}
+        GTest::gtest_main
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Widgets
+        Threads::Threads
+        Vulkan::Vulkan
+        ${PLATFORM_LIBS})
+
+if(WIN32)
+    target_compile_definitions(recovery_plan_tests PRIVATE MA_USE_WASAPI=1)
+endif()
+
+include(GoogleTest)
+gtest_discover_tests(recovery_plan_tests)

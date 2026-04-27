@@ -1,0 +1,16 @@
+address	file	classification	reason
+0x01FF80D4	runtime/src/hw/hw_overlay.cpp	wrong_path	Boot skip from 0x02000C9C and retry-path rewrites at 0x02000D58/0x02000D6C still bypass the unresolved helper chain.
+0x01FF80E4	runtime/src/hw/hw_overlay.cpp	temporary	Preserves the helper-produced r4 status bits at 0x02000D80 until the surrounding helper chain has real semantics.
+0x020254E8	runtime/src/hw/hw_overlay.cpp	temporary	Mirrors the observed r0 = r4 >> 9 readiness value and returns to 0x02000D90 instead of falling into the sparse tail.
+0x020254B8	runtime/src/hw/hw_overlay.cpp	wrong_path	Forces success at the 0x02000E20 callsite and can steer boot away from the real probe/helper chain.
+0x0202ABFC	runtime/src/hw/hw_overlay.cpp	wrong_path	Alternates caller-side continuations to escape sparse helper churn instead of executing a faithful return path.
+0x0204D9E4	runtime/src/hw/hw_overlay.cpp	temporary	Treats an untranslated init helper as a success-return stub so startup can progress during bring-up.
+0x0204D050	runtime/src/hw/hw_mainram_helper_0202B454.cpp	wrong_path	Seeds boot globals and shared flags directly; useful for bring-up, but not the final game-owned initialization path.
+0x0204D150	runtime/src/hw/hw_mainram_helper_0202B454.cpp	temporary	Returns to the caller or 0x02000D14 because the real helper body is still untranslated.
+0x02029B64	runtime/src/hw/hw_mainram_helper_0202B454.cpp	temporary	Holds control flow on the caller return because the sparse tail is missing from the generated output in this build.
+0x02014090	runtime/src/hw/hw_mainram_helper_0202B454.cpp	keep	Repairs the stacked return slot for the 0x0202B45A epilogue and matches the observed caller contract better than generic gap recovery.
+0x0202B454	runtime/src/hw/hw_mainram_helper_0202B454.cpp	keep	Dedicated helper chunk models the lifted epilogue path and only falls back when the stacked return address is junk.
+0x0200D510	runtime/src/hw/hw_mainram_helper_0202B454.cpp	temporary	Treats an untranslated tail as a helper return so the caller can keep running.
+0x02014038	runtime/src/hw/hw_mainram_helper_0202B454.cpp	temporary	Sparse LR-return helper registered to keep boot probing alive until the underlying block is lifted correctly.
+0x02025082	runtime/src/hw/hw_mainram_helper_0202B454.cpp	temporary	Sparse LR-return helper registered during early boot hole recovery.
+0x0202A650	runtime/src/hw/hw_mainram_helper_0202B454.cpp	temporary	Sparse LR-return helper registered during early boot hole recovery.

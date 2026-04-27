@@ -1,0 +1,8 @@
+address	category	status	notes
+0x0202A240	literal_fallthrough	resolved	Confirmed non-decodable Thumb/data hole; this is a control-flow problem, not a missing asset load.
+0x020235B2	thumb_island	unresolved	Repeated dispatch reaches a sparse Thumb island, but the real upstream helper chain still has not been reconstructed.
+0x020254E8	branch_target_resolution	partial	The bad helper return path to 0x02000D90 is stabilized by the observed r0 = r4 >> 9 status shim.
+0x020235B3	seed_gap	partial	Seeded explicitly in lifter/src/main.cpp because probe logs reach the Thumb helper through sparse dynamic flow.
+0x02029F4D	seed_gap	partial	Seeded explicitly to materialize the sparse Thumb hole in the 0x02029Exx/0x02029Fxx cluster.
+0x0202ABFC	literal_fallthrough	unresolved	Sparse tail still feeds caller-side recovery skips and needs a real control-flow model.
+0x020069D8	branch_target_resolution	unresolved	Shows up in the 0x01FF80D4 helper chain and is still being recovered through shortcuts rather than a faithful branch path.
